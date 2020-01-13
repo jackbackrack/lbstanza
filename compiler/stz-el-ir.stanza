@@ -226,7 +226,7 @@ public defstruct ETVarLoc :
 public deftype EIns
 public defstruct EDef <: EIns :
   x: EVarLoc
-  y: EImm|False
+  y: EImm|False with: (updater => sub-y)
   info: FileInfo|False with: (default => false)
 public defstruct EInitClosures <: EIns :
   xs: Tuple<EVarLoc>
@@ -237,7 +237,7 @@ public defstruct ENew <: EIns :
   info: FileInfo|False
 public defstruct ETuple <: EIns :
   x: EVarLoc
-  ys: Tuple<EImm>
+  ys: Tuple<EImm> with: (updater => sub-ys)
   info: FileInfo|False
 public defstruct EVoidTuple <: EIns :
   x: EVarLoc
@@ -245,37 +245,37 @@ public defstruct EVoidTuple <: EIns :
   info: FileInfo|False
 public defstruct ETupleGet <: EIns :
   x: EVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
   index: Int
   info: FileInfo|False
 public defstruct ETupleSet <: EIns :
-  y: EImm
+  y: EImm with: (updater => sub-y)
   index: Int
   z: EImm
 public defstruct EObject <: EIns :
   x: EVarLoc
   n: Int with: (updater => sub-n)
-  ys: Tuple<EImm>
+  ys: Tuple<EImm> with: (updater => sub-ys)
   info: FileInfo|False
 public defstruct EArray <: EIns :
   x: EVarLoc
   n: Int with: (updater => sub-n)
-  ys: Tuple<EImm>
+  ys: Tuple<EImm> with: (updater => sub-ys)
   info: FileInfo|False
 public defstruct EStruct <: EIns :
   x: EVarLoc
   n: Int with: (updater => sub-n)
-  ys: Tuple<EImm>
+  ys: Tuple<EImm> with: (updater => sub-ys)
 public defstruct EPtr <: EIns :
   x: EVarLoc
-  loc: ELoc
+  loc: ELoc with: (updater => sub-loc)
 public defstruct ELoad <: EIns :
   x: EVarLoc
   xtype: EType with: (updater => sub-xtype)
-  loc: ELoc
+  loc: ELoc with: (updater => sub-loc)
 public defstruct EStore <: EIns :
   loc: ELoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
   ytype: EType with: (default => ETop(), updater => sub-ytype)
   info: FileInfo|False
 public defstruct ELabel <: EIns :
@@ -295,49 +295,49 @@ public defstruct EDump <: EIns :
   ys: Tuple<EImm>
 public defstruct EInterpret <: EIns :
   x: EVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
 public defstruct EConv <: EIns :
   x: EVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
 public defstruct EGoto <: EIns :
   n: Int with: (updater => sub-n)
 public defstruct EPrim <: EIns :
   x: EVarLoc
   op: EOp
-  ys: Tuple<EImm>
+  ys: Tuple<EImm> with: (updater => sub-ys)
   info: FileInfo|False
 public defstruct EIf <: EIns :
   n1: Int with: (updater => sub-n1)
   n2: Int with: (updater => sub-n2)
   op: EOp|False
-  ys: Tuple<EImm>
+  ys: Tuple<EImm> with: (updater => sub-ys)
 public defstruct EMatch <: EIns :
   ys: Tuple<EImm>
   branches: Tuple<EBranch> with: (updater => sub-branches)
   info: FileInfo|False
 public defstruct EDispatch <: EIns :
-  ys: Tuple<EImm>
+  ys: Tuple<EImm> with: (updater => sub-ys)
   branches: Tuple<EBranch> with: (updater => sub-branches)
   info: FileInfo|False
 public defstruct ECheckLength <: EIns :
-  y: EImm
+  y: EImm with: (updater => sub-y)
   length: Int
   info: FileInfo|False
 public defstruct ECheck <: EIns :
-  y: EImm
+  y: EImm with: (updater => sub-y)
   type: EType
   ctxt: CastErrorContext
   info: FileInfo|False  
 public defstruct ECheckSet <: EIns :
-  y: EImm
+  y: EImm with: (updater => sub-y)
   name: String|False
   info: FileInfo|False
 public defstruct EBox <: EIns :
   x: EVarLoc
-  y: EImm|False
+  y: EImm|False with: (updater => sub-y)
 public defstruct EBoxGet <: EIns :
   x: EVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
 public defstruct EBoxSet <: EIns :
   y: EImm
   z: EImm  
@@ -347,31 +347,31 @@ public defstruct ENewObject <: EIns :
   x: EVarLoc
   n: Int with: (updater => sub-n)
   targs: Tuple<EType> with: (updater => sub-targs)
-  ys: Tuple<EImm>
+  ys: Tuple<EImm> with: (updater => sub-ys)
   info: FileInfo|False
 public defstruct EObjectGet <: EIns :
   x: EVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
   n: Int with: (updater => sub-n)
   index: Int
 public defstruct EObjectTGet <: EIns :
   x: ETVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
   n: Int with: (updater => sub-n)
   index: Int
 public defstruct EClosureGet <: EIns :
   x: EVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
   n: Int with: (updater => sub-n)
   index: Int
 public defstruct EClosureTGet <: EIns :
   x: ETVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
   n: Int with: (updater => sub-n)
   index: Int
 public defstruct ETDef <: EIns :
   x: ETVarLoc
-  y: EImm
+  y: EImm with: (updater => sub-y)
 public defstruct ELetRec <: EIns :
   xs: Tuple<EVarLoc>
   ys: Tuple<EClosure> with: (updater => sub-ys)
@@ -388,10 +388,10 @@ public defstruct ETypeof <: EIns :
   n1: Int with: (updater => sub-n1)
   n2: Int with: (updater => sub-n2)
   type:EType
-  y: EImm
+  y: EImm with: (updater => sub-y)
 public defstruct ECheckFail <: EIns :
   type:EType
-  y: EImm
+  y: EImm with: (updater => sub-y)
   ctxt: CastErrorContext
   info: FileInfo|False
 
