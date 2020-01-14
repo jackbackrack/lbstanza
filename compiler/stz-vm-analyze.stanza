@@ -18,6 +18,8 @@ public defn analyze (vmp:VMPackage) :
         val default* = analyze(default(func))
         VMMultifn(arg(func), funcs*, default*)
       (func:VMFunc) :
+        println("---")
+        println(func)
         analyze(func)
     sub-func(f, func*)
   sub-funcs(vmp, funcs*)
