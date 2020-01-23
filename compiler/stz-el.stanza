@@ -2862,7 +2862,13 @@ defn constant-fold (epackage:EPackage, gvt:VarTable) -> EPackage :
     defn walk (e:ELItem) -> ELItem :
       match(e) :
         (e:EVar) :
-          ;; get?(bindings, n(e), e)
+          ;; TODO: THIS SHOULD WORK AND IS NECESSARY FOR CONSTANT FOLDING
+          ;; match(get?(bindings, n(e), e)) :
+          ;;   (b:EVar) : b
+          ;;   (b:ELiteral) : b when value(b) is-not EObject else e
+          ;;   (b) : b
+          e
+        (e:ELive) :
           e
         (e:EObject) :
           println("DEFINING %_ -> %_" % [n(x(e)), ELiteral(e)])
