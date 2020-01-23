@@ -10,6 +10,7 @@ defpackage stz/el :
   import stz/dyn-tree
   import stz/conversion-utils
   import stz/set-utils
+  import stz/basic-ops
   import stz/dispatch-dag with:
     prefix(Top) => Dag
   import stz/el-infer with :
@@ -85,7 +86,9 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
+  ;; run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
+  run-pass("Fold Ifs", fold-ifs, "fold-ifs", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
   run-pass("Remove Unused Vars", remove-unused-vars, "remove-unused-vars", false)
@@ -1556,8 +1559,8 @@ defn within-package-top-inline (epackage:EPackage) :
       (f:EFn) :
         empty?(localfns(body(f))) and
         empty?(localobjs(body(f))) and
-        length(ins(body(f))) < 8 and
-        for i in ins(body(f)) all? : i is EDef|EPrim|EReturn|ELive ;; |ELoad|ETupleGet|EObjectGet ;; ENew|EConv|
+        length(ins(body(f))) < 11 and ;; 8
+        for i in ins(body(f)) all? : i is ELabel|EDef|EPrim|EReturn|ELive|EIf|ETupleGet|EObjectGet|EObject|ELoad|EGoto ;; |ENew|EConv|
 
   for exp in exps(epackage) do :
     match(exp:EDefn|EDefmethod) :
@@ -1617,37 +1620,97 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
   ;; count num reads
   val num-reads = IntTable<Int>(0)
   val num-writes = IntTable<Int>(0)
+  val writers = IntTable<EIns>()
   val var-side-effecting? = IntSet()
   val num-gotos = IntTable<Int>(0)
   for arg in args do :
     num-writes[arg] = 1
-  for i in ins(body) do :
-    defn walk (e:ELItem, lhs?:True|False) :
-      match(e) :
-        (e:EVar|ETagof) :
-          num-reads[n(e)] = num-reads[n(e)] + 1
-        (e:EVarLoc) :
-          if lhs? :
-            add(var-side-effecting?, n(e)) when (i is-not EDef)
+  defn pure? (ins:EIns) :
+    match(ins) :
+      (ins:EPrim) : op(ins) is BasicOp and op(ins) is-not GCOp|PrintStackTraceOp|FlushVMOp|CRSPOp
+      (ins:EDef|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) : true
+      (ins) : false
+
+  ;; record labels
+  val labels = IntTable<Int>()
+  for (i in ins(body), j in 0 to false) do :
+    match(i:ELabel): labels[n(i)] = j
+  println("LABELS:")
+  for lab in labels do : println("  %_" % [lab])
+
+  ;; collect statistics including num-reads/writes on vars and label/gotos
+  ;; simulate execution to trace only reachable code
+  val walked? = IntSet()
+  defn walk (e:ELItem, writer:False|EIns) :
+    match(e) :
+      (e:EVar|ETagof) :
+        num-reads[n(e)] = num-reads[n(e)] + 1
+      (e:EVarLoc) :
+        match(writer) :
+          (writer:EIns) :
+            add(var-side-effecting?, n(e)) when not pure?(writer)
             num-writes[n(e)] = num-writes[n(e)] + 1
-          else :
+            writers[n(e)] = writer
+          (writer) :
             num-reads[n(e)] = num-reads[n(e)] + 1
-        (e:ELive) :
-          false
-        (e:EIf) :
-          num-gotos[n1(e)] = num-gotos[n1(e)] + 1
-          num-gotos[n2(e)] = num-gotos[n2(e)] + 1
-          do(walk{_, lhs?}, ys(e))
-        (e:EBranch|EGoto) :
-          num-gotos[n(e)] = num-gotos[n(e)] + 1
-        (e:EPtr|ELoad) :
-          walk(loc(e), false)
-          walk(x(e),   true)
-        (e) :
-          do(walk{_, lhs?}, e)
-    walk(i, true)
+      (e:ELive) :
+        false
+      (e:EIf) :
+        num-gotos[n1(e)] = num-gotos[n1(e)] + 1
+        num-gotos[n2(e)] = num-gotos[n2(e)] + 1
+        do(walk{_, false}, ys(e))
+      (e:EBranch|EGoto) :
+        num-gotos[n(e)] = num-gotos[n(e)] + 1
+      (e:EPtr|ELoad) :
+        walk(loc(e), false)
+        walk(x(e),   e)
+      (e:EIns) :
+        do(walk{_, e}, e)
+      (e) :
+        do(walk{_, false}, e)
+  let loop (pc:Int = 0) :
+    defn goto (n:Int) : loop(labels[n])
+    if not walked?[pc] and pc < length(ins(body)) :
+      add(walked?, pc)
+      val ins = ins(body)[pc]
+      walk(ins, ins)
+      match(ins) :
+        (e:EIf) :              (goto(n1(e)), goto(n2(e)))
+        (e:EMatch|EDispatch) : for b in branches(e) do : goto(n(b))
+        (e:EGoto) :            goto(n(e))
+        (e:EIns) :             loop(pc + 1)
+
+  val unreachable? = IntSet()
+  for j in 0 to length(ins(body)) do :
+    add(unreachable?, j) when not walked?[j]
+
   val unused-vars = IntSet()
   for n in keys(vars) do : add(unused-vars, n) when num-reads[n] == 0
+
+  ;; transitively remove unused vars
+  val work = Queue<Int>()
+  for v in unused-vars do : add(work, v)
+  defn dec-num-reads (e:ELItem, lhs?:True|False) :
+    match(e) :
+      (e:EVarLoc) :
+        do(dec-num-reads{_, true}, e) when not lhs?
+      (e:EVar|ETagof) :
+        num-reads[n(e)] = num-reads[n(e)] - 1
+        if num-reads[n(e)] == 0 :
+          add(work,        n(e))
+          add(unused-vars, n(e))
+      (e:EPtr|ELoad) :
+        dec-num-reads(loc(e), false)
+        dec-num-reads(x(e),   true)
+      (e) :
+        do(dec-num-reads{_, lhs?}, e)
+  while not empty?(work) :
+    val uv = pop(work)
+    match(get?(writers, uv, false)) :
+      (ins:EIns) : do(dec-num-reads{_, false}, ins) when pure?(ins)
+      (ins) :      false
+     
+  ;; rename all vars through single write defs
   val aliases = IntTable<Int>()
   defn renameable? (n:Int) -> True|False :
     (key?(vars, n) and not mutable?(vars[n])) or args[n]
@@ -1682,17 +1745,20 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
           map(walk, e)
     walk(e) as EIns
   val renamed-ins = for i in ins(body) seq : rename(i)
+
+  ;; remove pure ins producing unused vars
   defn unused? (n:Int) : unused-vars[n] and not var-side-effecting?[n]
   val new-ins = to-tuple $ generate<EIns> :
-    for i in renamed-ins do :
-      match(i) :
-        (i:EDef) :
-          yield(i) when not unused?(n(x(i)))
-        (i:ELive) :
-          val vars = to-tuple $ for e in xs(i) filter : not match(e:EVar) : unused?(n(e))
-          yield(ELive(vars)) when not empty?(vars)
-        (i) :
-          yield(i)
+    for (i in renamed-ins, j in 0 to false) do :
+      if not unreachable?[j] :
+        match(i) :
+          (i:EDef|EPrim|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) :
+            yield(i) when not unused?(n(x(i)))
+          (i:ELive) :
+            val vars = to-tuple $ for e in xs(i) filter : not match(e:EVar) : unused?(n(e))
+            yield(ELive(vars)) when not empty?(vars)
+          (i) :
+            yield(i)
   val peep-ins = generate<EIns> :
     let walk (j:Int = 0) :
       if j < length(new-ins) :
@@ -1748,6 +1814,7 @@ defn remove-unused-vars (p:EPackage, gvt:VarTable) -> EPackage :
   defn walk-top (e:ELItem, a:Tuple<Int>, i:Int) -> ELItem :
     val enable? = i >= lo and i < hi
     ;; println("TOP %_\n%_" % [i, e]) when enable?
+    match(e:EDefn) : println("\n--- WALKING DEFN %_---\n" % [n(e)])
     walk(e, a, enable?)
   sub-exps(p, (to-tuple $ seq({walk-top(_, [], _)}, exps(p), ids)) as Tuple<ETExp>)
 
@@ -2545,7 +2612,7 @@ defn MethodTable (epackage:EPackage) :
         val i = index(solns[0] as UniqueSoln)
         targets(mdag)[i]
       ;; else :
-        ;; println("AMBIGUOUS %_" % [mdag])
+      ;;   println("AMBIGUOUS %_" % [mdag])
 
   ;Build the Method Table
   defn build-method-table (class-tree:DynTree, dag-table:IntTable<MethodDag>) :
@@ -2572,10 +2639,10 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
             (f:ECurry) : ECurry(EVar(n), targs(f))
         match(fid:Int) :
           val ys-types = map(type{vt, _}, ys)
-          ;; print("RESOLVING %_%_ " % [fid, ys-types])          
+          print("RESOLVING %_%_ " % [fid, ys-types])          
           match(resolve-target(method-table, fid, ys-types)) :
-            (n:Int) : sub-fid(n) ;; (val res = sub-fid(n), println("-> %_" % [res]), res)
-            (n:False) : false ;; (println("") false)
+            (n:Int) : (val res = sub-fid(n), println("-> %_" % [res]), res) ; sub-fid(n) 
+            (n:False) : (println("") false) ; false
             
       ;Resolve calls and tcalls
       match(i) :
@@ -2586,7 +2653,7 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
         (i) : i
     sub-ins(e, ins*)
   defn resolve-texp (x:ETExp, vt:VarTable) :
-    ;; match(x:EDefn) : println("--- DEFN %_" % [n(x)])
+    match(x:EDefn) : println("--- DEFN %_" % [n(x)])
     val result = let loop (x:ELBigItem = x) :
       match(map(loop, x)) :
         (e:EBody) : resolve-in-body(e,vt)
@@ -2599,6 +2666,225 @@ defstruct MethodDag :
   targets: Tuple<Int>
 with:
   printer => true
+
+;============================================================
+;====================== FOLD IFS ============================
+;============================================================
+
+defstruct IfRewrite :
+  old-if : EIf
+  new-if : EIf
+with:
+  printer => true
+
+defn match-if (return:() -> Void, inz:Seq<EIns>) -> EIf :
+  return() when empty?(inz)
+  match(peek(inz)) :
+    (ins:EIf) : next(inz) as EIf
+    (ins) :     return()
+
+defn match-label (return:() -> Void, inz:Seq<EIns>, target:Int) :
+  return() when empty?(inz)
+  match(peek(inz)) :
+    (ins:ELabel) :
+      if n(ins) == target: next(inz)
+      else : return()
+    (ins) :  return()
+
+defn maybe-match-live (inz:Seq<EIns>) :
+  if not empty?(inz) :
+    match(peek(inz)) :
+      (ins:ELive) : next(inz)
+      (ins) :       false
+
+defn match-def (return:() -> Void, inz:Seq<EIns>, var-loc:False|EVarLoc, target:ELSLiteral) -> EVarLoc :
+  return() when empty?(inz)
+  match(peek(inz)) :
+    (ins:EDef) :
+      match(y(ins)) :
+        (t:ELSLiteral) :
+          if value(target) == value(t) :
+            match(var-loc) :
+              (var-loc:EVarLoc) :
+                if n(x(ins)) == n(var-loc) : (next(inz), x(ins))
+                else : return()
+              (var-loc) :
+                (next(inz), x(ins))
+          else : return()
+        (t) : return()
+    (ins) : return()
+
+defn match-goto (return:() -> Void, inz:Seq<EIns>, target:False|Int) -> Int :
+  return() when empty?(inz)
+  match(peek(inz)) :
+    (ins:EGoto) :
+      match(target) :
+        (target:Int) :
+          if n(ins) == target : (next(inz), n(ins))
+          else : return()
+        (target) : (next(inz), n(ins))
+    (ins) :  return()
+
+defn match-match (return:() -> Void, vt:VarTable, inz:Seq<EIns>, arg:Int) -> EMatch :
+  return() when empty?(inz)
+  match(peek(inz)) :
+    (ins:EMatch) :
+      if length(ys(ins)) == 1 and length(branches(ins)) == 2 :
+        match(ys(ins)[0], types(branches(ins)[0])[0], types(branches(ins)[1])[0]) :
+          (v:EVar, bt0:EOf, bt1:EOf) :
+            if n(v) == arg and n(bt0) == n(iotable(vt), CORE-TRUE-ID) and n(bt1) == n(iotable(vt), CORE-FALSE-ID) :
+              next(inz) as EMatch
+            else : return()
+          (y, bt0, bt1) : return()
+      else : return()
+    (ins) : return()
+
+defn trace-if (inz:Seq<EIns>, i:Int) :
+  ;; if not empty?(inz) :
+  ;;   println("MATCHED %_: %_" % [i, peek(inz)])
+  false
+
+defn match-if-match (inz:Seq<EIns>, vt:VarTable) -> Maybe<IfRewrite> :
+  label<Maybe<IfRewrite>> top-return:
+    defn return () : top-return(None())
+    val if-ins = match-if(return, inz)
+    trace-if(inz, 0)
+    match-label(return, inz, n2(if-ins))
+    trace-if(inz, 1)
+    maybe-match-live(inz)
+    trace-if(inz, 2)
+    val merge-var = match-def(return, inz, false, ELSLiteral(false))
+    trace-if(inz, 3)
+    val merge-label = match-goto(return, inz, false)
+    trace-if(inz, 4)
+    match-label(return, inz, n1(if-ins))
+    trace-if(inz, 5)
+    maybe-match-live(inz)
+    trace-if(inz, 6)
+    match-def(return, inz, merge-var, ELSLiteral(true))
+    trace-if(inz, 7)
+    match-goto(return, inz, merge-label)
+    trace-if(inz, 8)
+    match-label(return, inz, merge-label)
+    trace-if(inz, 9)
+    val match-ins = match-match(return, vt, inz, n(merge-var))
+    trace-if(inz, 10)
+    One(IfRewrite(if-ins, EIf(n(branches(match-ins)[0]), n(branches(match-ins)[1]), false, ys(if-ins))))
+
+defn fold-ifs (epackage:EPackage, gvt:VarTable) -> EPackage :
+  defn fold-in-body (e:EBody, vt:VarTable) -> EBody :
+    val inz = to-seq $ ins(e)
+    val rewrites = Queue<IfRewrite>()
+    let loop () :
+      match(match-if-match(inz, vt)) :
+        (ir:One<IfRewrite>) :
+          add(rewrites, value(ir))
+          println("FOUND IF %_" % [value(ir)])
+        (none) : false
+      if not empty?(inz) :
+        next(inz)
+        loop()
+    if empty?(rewrites) :
+      e
+    else :
+      defn eq-if? (a:EIf, b:EIf) -> True|False :
+        if n1(a) == n1(b) and n2(a) == n2(b) and length(ys(a)) == length(ys(b)) :
+          match(op(a), op(b), ys(a)[0], ys(b)[0]) :
+            (oa:False, ob:False, av:EVar, bv:EVar) : n(av) == n(bv)
+            (oa, ob, ai, bi) :                       false
+      ;; val new-ins = reverse $
+      ;;   let loop (j:Int = 0, cutting?:True|False = false, res:List<EIns> = List()) :
+      ;;     if j >= length(ins(e)) :
+      ;;       res
+      ;;     else :
+      ;;       val ins = ins(e)[j]
+      ;;       println("%_" % [ins])
+      ;;       if cutting? :
+      ;;         println("CUTTING")
+      ;;         loop(j + 1, ins is-not EMatch, res)
+      ;;       else :
+      ;;         if empty?(rewrites) :
+      ;;           println("EMPTY")
+      ;;           loop(j + 1, false, cons(ins, res))
+      ;;         else :
+      ;;           match(ins, peek(rewrites)) :
+      ;;             (i:EIf, rewrite:IfRewrite) :
+      ;;               print("MAYBE FOUND REWRITE: ")
+      ;;               if eq-if?(old-if(rewrite), i) : (println("MATCH"), pop(rewrites), loop(j + 1, true, cons(new-if(rewrite), res)))
+      ;;               else : (println("NO MATCH"), loop(j + 1, false, cons(i, res)))
+      ;;             (i, rewrite) : (println("COPY"), loop(j + 1, false, cons(i, res)))
+      ;; val new-ins = generate<EIns> :
+      ;;   let loop (j:Int = 0, cutting?:True|False = false) :
+      ;;     if j < length(ins(e)) :
+      ;;       val ins = ins(e)[j]
+      ;;       println("%_" % [ins])
+      ;;       if cutting? :
+      ;;         println("CUTTING")
+      ;;         loop(j + 1, ins is-not EMatch)
+      ;;       else :
+      ;;         if empty?(rewrites) :
+      ;;           println("EMPTY")
+      ;;           (yield(ins), loop(j + 1, false))
+      ;;         else :
+      ;;           match(ins, peek(rewrites)) :
+      ;;             (i:EIf, rewrite:IfRewrite) :
+      ;;               print("MAYBE FOUND REWRITE: ")
+      ;;               if eq-if?(old-if(rewrite), i) : (println("MATCH"), pop(rewrites), yield(new-if(rewrite)), loop(j + 1, true))
+      ;;               else : (println("NO MATCH"), yield(i), loop(j + 1, false))
+      ;;             (i, rewrite) : (println("COPY"), yield(i), loop(j + 1, false))
+      ;; val res = to-tuple $ new-ins
+      ;; sub-ins(e, res)
+      val new-ins = for ins in ins(e) map :
+        if empty?(rewrites) :
+          ins
+        else :
+          match(ins, peek(rewrites)) :
+            (ins:EIf, rewrite:IfRewrite) : (pop(rewrites), new-if(rewrite) when eq-if?(ins, old-if(rewrite)) else ins)
+            (ins, rewrite) :               ins
+      sub-ins(e, new-ins)
+  defn resolve-texp (x:ETExp, vt:VarTable) :
+    val result = let loop (x:ELBigItem = x) :
+      match(x:EDefn) : println("IF-WALKING %_" % [n(x)])
+      match(map(loop, x)) :
+        (e:EBody) : fold-in-body(e,vt)
+        (e) : e
+    result as ETExp
+  map-with-var-table(resolve-texp, gvt, epackage)
+
+;============================================================
+;=================== RESOLVE MATCHES ========================
+;============================================================
+defn resolve-matches (epackage:EPackage, gvt:VarTable) -> EPackage :
+  defn resolve-in-body (e:EBody, vt:VarTable) -> EBody :
+    val ins* = for i in ins(e) map :
+      match(i) :
+        (i:EMatch) :
+          if length(ys(i)) == 1 :
+            val ys-types = map(type{vt, _}, ys(i))
+            val branch-typez = for b in branches(i) seq : types(b)
+            val all-branch-types = to-tuple $ for bts in zip-all(branch-typez) seq : reduce(EOr, bts)
+            val covered? = for (yst in ys-types, bt in all-branch-types) all? :
+              normalize(yst) == normalize(bt)
+            if covered? :
+              val len-1 = length(branches(i)) - 1
+              val ebranch = branches(i)[len-1]
+              val res = sub-branches(i, to-tuple $ cat(branches(i)[0 to len-1], [sub-types(ebranch, to-tuple $ for t in types(ebranch) seq : ETop())]))
+              println("COVERED? %_ %_ YTS %_ BTS %_" % [covered?, i, ys-types, all-branch-types])
+              println("  %_" % [res])
+              res
+            else :
+              i
+          else :
+            i
+        (i) : i
+    sub-ins(e, ins*)
+  defn resolve-texp (x:ETExp, vt:VarTable) :
+    val result = let loop (x:ELBigItem = x) :
+      match(map(loop, x)) :
+        (e:EBody) : resolve-in-body(e,vt)
+        (e) : e
+    result as ETExp
+  map-with-var-table(resolve-texp, gvt, epackage)
 
 ;============================================================
 ;=================== Closure Lifting ========================
