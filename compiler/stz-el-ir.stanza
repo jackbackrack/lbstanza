@@ -314,6 +314,7 @@ public defstruct EIf <: EIns :
 public defstruct EMatch <: EIns :
   ys: Tuple<EImm>
   branches: Tuple<EBranch> with: (updater => sub-branches)
+  covered?: True|False with: (updater => sub-covered?, default => false)
   info: FileInfo|False
 public defstruct EDispatch <: EIns :
   ys: Tuple<EImm> with: (updater => sub-ys)
@@ -811,7 +812,7 @@ defsyntax el-ir :
   defrule eins = (goto ?n:#lid) : EGoto(n)
   defrule eins = (end) : EEnd(closest-info())
   defrule eins = (live(?ys:#eimm ...)) : ELive(to-tuple(ys))
-  defrule eins = (match(?ys:#eimm ...) : (?bs:#ebranch ...)) : EMatch(to-tuple(ys), to-tuple(bs), closest-info())
+  defrule eins = (match(?ys:#eimm ...) : (?bs:#ebranch ...)) : EMatch(to-tuple(ys), to-tuple(bs), false, closest-info())
   defrule eins = (dispatch(?ys:#eimm ...) : (?bs:#ebranch ...)) : EDispatch(to-tuple(ys), to-tuple(bs), closest-info())
   defrule eins = (check-set(?name:#string?) ?y:#eimm) : ECheckSet(y, name, closest-info())  
   defrule eins = (?x:#vloc = interpret ?y:#eimm) : EInterpret(x,y)
@@ -1267,7 +1268,7 @@ defmethod map<?T> (f:ELItem -> ELItem, item:ELItem&?T) -> ELItem&T :
     (e:EPrim) : EPrim(h(x(e)), op(e), h(ys(e)), info(e))
     (e:EIf) : EIf(n1(e), n2(e), op(e), h(ys(e)))
     (e:ETypeof) : ETypeof(n1(e), n2(e), h(type(e)), h(y(e)))
-    (e:EMatch) : EMatch(h(ys(e)), h(branches(e)), info(e))
+    (e:EMatch) : EMatch(h(ys(e)), h(branches(e)), covered?(e), info(e))
     (e:EDispatch) : EDispatch(h(ys(e)), h(branches(e)), info(e))
     (e:ECheckSet) : ECheckSet(h(y(e)), name(e), info(e))
     (e:EBox) : EBox(h(x(e)), h?(y(e)))

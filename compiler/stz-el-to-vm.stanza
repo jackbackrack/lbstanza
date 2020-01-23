@@ -1069,11 +1069,12 @@ defn Compiler (gt:GlobalTable, iotable:IOTable, ehier:EHier, progbuffer:ProgBuff
         val ys* = map(imm!, ys(ins))
         val branches* = for b in branches(ins) map :
           VMBranch(map(to-typeset, types(b)), get-label(n(b)))
-        val len-1 = length(branches(ins)) - 1
-        val covered? = all?({_ == ETop()}, types(branches(ins)[len-1]))
-        val fail-lbl = n(branches*[len-1]) when covered? else make-label()
-        emit(MatchIns(ys*, branches*, fail-lbl))
-        if not covered? :
+        if covered?(ins) :
+          val len-1 = length(branches(ins)) - 1
+          emit(MatchIns(ys*, to-tuple $ branches*[0 to len-1], n(branches*[len-1])))
+        else :
+          val fail-lbl = make-label()
+          emit(MatchIns(ys*, branches*, fail-lbl))
           emit(LabelIns(fail-lbl))
           val arg-tuple = makedef(VMRef())
           ctuple(arg-tuple, ys*, info(ins))

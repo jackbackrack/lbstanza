@@ -86,7 +86,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
-  ;; run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
+  run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
   run-pass("Fold Ifs", fold-ifs, "fold-ifs", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
@@ -2865,15 +2865,7 @@ defn resolve-matches (epackage:EPackage, gvt:VarTable) -> EPackage :
             val all-branch-types = to-tuple $ for bts in zip-all(branch-typez) seq : reduce(EOr, bts)
             val covered? = for (yst in ys-types, bt in all-branch-types) all? :
               normalize(yst) == normalize(bt)
-            if covered? :
-              val len-1 = length(branches(i)) - 1
-              val ebranch = branches(i)[len-1]
-              val res = sub-branches(i, to-tuple $ cat(branches(i)[0 to len-1], [sub-types(ebranch, to-tuple $ for t in types(ebranch) seq : ETop())]))
-              println("COVERED? %_ %_ YTS %_ BTS %_" % [covered?, i, ys-types, all-branch-types])
-              println("  %_" % [res])
-              res
-            else :
-              i
+            sub-covered?(i, covered?)
           else :
             i
         (i) : i
