@@ -85,6 +85,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
+    run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
 
@@ -2368,6 +2369,386 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
 defstruct MethodDag :
   dag: Dag
   targets: Tuple<Int>
+
+;============================================================
+;=========== COMMON SUBEXPRESSION ELIMINATION ===============
+;============================================================
+defn walk-writes (e:EBody, args:Tuple<Int>) -> IntTable<Int> :
+  val num-writes = IntTable<Int>(0)
+  for arg in args do :
+    num-writes[arg] = 1
+  defn walk-writes (e:ELItem, writer:False|EIns) :
+    match(e) :
+      (e:EVarLoc) :
+        match(writer) :
+          (writer:EIns) : num-writes[n(e)] = num-writes[n(e)] + 1
+          (writer) :      false
+      (e:EPtr|ELoad) :
+        walk-writes(loc(e), false)
+        walk-writes(x(e),   e)
+      (e:EIns) :
+        do(walk-writes{_, e}, e)
+      (e) :
+        do(walk-writes{_, false}, e)
+  for i in ins(e) do : walk-writes(i, false)
+  num-writes
+
+deftype EVarLocIns :
+  EPrim <: EVarLocIns
+  ELoad <: EVarLocIns
+  EObjectGet <: EVarLocIns
+  ETupleGet <: EVarLocIns
+  EConv <: EVarLocIns
+  EInterpret <: EVarLocIns
+  EDef <: EVarLocIns
+
+defmulti varloc (e:EVarLocIns) -> EVarLoc
+
+defmethod varloc (e:EPrim) : x(e)
+defmethod varloc (e:ELoad) : x(e)
+defmethod varloc (e:EObjectGet) : x(e)
+defmethod varloc (e:ETupleGet) : x(e)
+defmethod varloc (e:EConv) : x(e)
+defmethod varloc (e:EInterpret) : x(e)
+defmethod varloc (e:EDef) : x(e)
+
+deftype EEqualable :
+  EPrim <: EEqualable
+  ELoad <: EEqualable
+  EObjectGet <: EEqualable
+  ETupleGet <: EEqualable
+  EConv <: EEqualable
+  EInterpret <: EEqualable
+  EDef <: EEqualable
+  EImm <: EEqualable
+  ELoc <: EEqualable
+  EOp <: EEqualable
+
+;; TODO: THESE ARE ONLY BASIC-OPS -- WHAT OTHER OPS DO I NEED TO COVER?
+public defn id (op:EOp) -> Int :
+  match(op) :
+    (op:IntAddOp) : 0
+    (op:IntSubOp) : 1
+    (op:IntMulOp) : 2
+    (op:IntDivOp) : 3
+    (op:IntModOp) : 4
+    (op:IntAndOp) : 5
+    (op:IntOrOp) : 6
+    (op:IntXorOp) : 7
+    (op:IntShlOp) : 8
+    (op:IntShrOp) : 9
+    (op:IntAshrOp) : 10
+    (op:IntLtOp) : 11
+    (op:IntGtOp) : 12
+    (op:IntLeOp) : 13
+    (op:IntGeOp) : 14
+    (op:AddOp) : 15
+    (op:SubOp) : 16
+    (op:MulOp) : 17
+    (op:DivOp) : 18
+    (op:ModOp) : 19
+    (op:AndOp) : 20
+    (op:OrOp) : 21
+    (op:XorOp) : 22
+    (op:ShlOp) : 23
+    (op:ShrOp) : 24
+    (op:AshrOp) : 25
+    (op:EqOp) : 26
+    (op:NeOp) : 27
+    (op:LtOp) : 28
+    (op:GtOp) : 29
+    (op:LeOp) : 30
+    (op:GeOp) : 31
+    (op:UleOp) : 32
+    (op:UltOp) : 33
+    (op:UgtOp) : 34
+    (op:UgeOp) : 35
+    (op:IntNotOp) : 36
+    (op:IntNegOp) : 37
+    (op:NegOp) : 38
+    (op:NotOp) : 39
+    (op:GCOp) : 40
+    (op:ClassNameOp) : 41
+    (op:PrintStackTraceOp) : 42
+    (op:FlushVMOp) : 43
+    (op:CRSPOp) : 44
+    (op:EnterStackOp) : 45
+    (op:YieldOp) : 46
+
+public defn side-effecting? (op:EOp) -> True|False :
+  match(op) :
+    (op:GCOp) : true
+    (op:PrintStackTraceOp) : true
+    (op:FlushVMOp) : true
+    (op:CRSPOp) : true
+    (op:EnterStackOp) : true
+    (op:YieldOp) : true
+    (op) : false
+
+;; defmulti cse-hash (a:EEqualable) -> Int
+;; 
+;; defmethod cse-hash (a:EPrim) -> Int :
+;;   var i = length(ys(a))
+;;   for y in ys(a) do :
+;;      i = (7 * i) + cse-hash(y)
+;;   cse-hash(op(a)) + 7 * i
+;; 
+;; defmethod cse-hash (a:EOp) : id(a)
+;; defmethod cse-hash (a:EObjectGet) : cse-hash(y(a)) + 7 * hash(n(a)) + 49 * hash(index(a))
+;; defmethod cse-hash (a:ETupleGet) : cse-hash(y(a)) + 7 * hash(index(a))
+;; defmethod cse-hash (a:ELoad) : cse-hash(loc(a))
+;; defmethod cse-hash (a:EConv) : cse-hash(y(a))
+;; defmethod cse-hash (a:EInterpret) : cse-hash(y(a))
+;; defmethod cse-hash (a:EDef) : cse-hash(y(a) as EImm) when y(a) is EImm else 0
+;; defmethod cse-hash (a:EImm) : 0
+;; defmethod cse-hash (a:ELSLiteral) : hash(value(a))
+;; defmethod cse-hash (a:ELiteral) : hash(value(a))
+;; defmethod cse-hash (a:EVar) : hash(n(a))
+;; defmethod cse-hash (a:EVarLoc) : hash(n(a))
+;; defmethod cse-hash (a:EDeref) : cse-hash(y(a))
+;; defmethod cse-hash (a:EDeptr) : cse-hash(y(a))
+;; defmethod cse-hash (a:EField) : cse-hash(loc(a)) + 7 * hash(n(a)) + 49 * hash(index(a))
+;; defmethod cse-hash (a:ESlot) : cse-hash(loc(a)) + 7 * cse-hash(index(a))
+
+defmulti cse-equal? (a:EEqualable, b:EEqualable) -> True|False
+
+defmethod cse-equal? (a:EEqualable, b:EEqualable) : false
+defmethod cse-equal? (a:EOp, b:EOp) : id(a) == id(b)
+defmethod cse-equal? (a:EPrim, b:EPrim) : cse-equal?(op(a), op(b)) and all?(cse-equal?, ys(a), ys(b)) 
+defmethod cse-equal? (a:EObjectGet, b:EObjectGet) : cse-equal?(y(a), y(b)) and n(a) == n(b) and index(a) == index(b)
+defmethod cse-equal? (a:ETupleGet, b:ETupleGet) : cse-equal?(y(a), y(b)) and index(a) == index(b)
+defmethod cse-equal? (a:ELoad, b:ELoad) : cse-equal?(loc(a), loc(b))
+defmethod cse-equal? (a:EConv, b:EConv) : cse-equal?(y(a), y(b))
+defmethod cse-equal? (a:EInterpret, b:EInterpret) : cse-equal?(y(a), y(b))
+defmethod cse-equal? (a:EDef, b:EDef) :
+  match(y(a), y(b)) :
+    (ai:EImm, bi:EImm) : cse-equal?(ai, bi)
+    (af, bf) : false
+defmethod cse-equal? (a:ELSLiteral, b:ELSLiteral) : value(a) == value(b)
+defmethod cse-equal? (a:ELiteral, b:ELiteral) : value(a) == value(b)
+defmethod cse-equal? (a:EVar, b:EVar) : n(a) == n(b)
+defmethod cse-equal? (a:EVarLoc, b:EVarLoc) : n(a) == n(b)
+defmethod cse-equal? (a:EDeref, b:EDeref) : cse-equal?(y(a), y(b))
+defmethod cse-equal? (a:EDeptr, b:EDeptr) : cse-equal?(y(a), y(b))
+defmethod cse-equal? (a:EField, b:EField) : cse-equal?(loc(a), loc(b)) and n(a) == n(b) and index(a) == index(b)
+defmethod cse-equal? (a:ESlot, b:ESlot) : cse-equal?(loc(a), loc(b)) and cse-equal?(index(a), index(b))
+
+defmulti cseable? (a:EEqualable, mut?:Int -> True|False) -> True|False
+
+defmethod cseable? (a:EEqualable, mut?:Int -> True|False) : true
+defmethod cseable? (a:EPrim, mut?:Int -> True|False) : cseable?(op(a), mut?) and all?(cseable?{_, mut?}, ys(a))
+defmethod cseable? (a:EOp, mut?:Int -> True|False) : not side-effecting?(a)
+defmethod cseable? (a:EObjectGet, mut?:Int -> True|False) : cseable?(y(a), mut?)
+defmethod cseable? (a:ETupleGet, mut?:Int -> True|False) : cseable?(y(a), mut?)
+defmethod cseable? (a:ELoad, mut?:Int -> True|False) : cseable?(loc(a), mut?)
+defmethod cseable? (a:EConv, mut?:Int -> True|False) : cseable?(y(a), mut?)
+defmethod cseable? (a:EInterpret, mut?:Int -> True|False) : cseable?(y(a), mut?)
+defmethod cseable? (a:EVar, mut?:Int -> True|False) : not mut?(n(a))
+defmethod cseable? (a:EVarLoc, mut?:Int -> True|False) : mut?(n(a))
+defmethod cseable? (a:EDeref, mut?:Int -> True|False) : cseable?(y(a), mut?)
+defmethod cseable? (a:EDeptr, mut?:Int -> True|False) : cseable?(y(a), mut?)
+defmethod cseable? (a:EField, mut?:Int -> True|False) : cseable?(loc(a), mut?)
+defmethod cseable? (a:ESlot, mut?:Int -> True|False) : cseable?(loc(a), mut?) and cseable?(index(a), mut?)
+defmethod cseable? (a:EDef, mut?:Int -> True|False) :
+  match(y(a)) :
+    (e:EImm) : cseable?(e, mut?)
+    (e:False) : true
+
+defstruct DominatorNode :
+  id : Int
+  nbrs : Tuple<Int>
+  tree : Vector<Int> with: (init => Vector<Int>())
+  rg : Vector<Int> with: (init => Vector<Int>())
+  bucket : Vector<Int> with: (init => Vector<Int>())
+  sdom : Int with: (setter => set-sdom, init => 0)
+  par : Int with: (setter => set-par, init => 0)
+  dom : Int with: (setter => set-dom, init => 0)
+  dsu : Int with: (setter => set-dsu, init => 0)
+  lab : Int with: (setter => set-lab, init => 0)
+  arr : Int with: (setter => set-arr, init => 0)
+  rev : Int with: (setter => set-rev, init => 0)
+
+defstruct DominatorGraph :
+  nodes : Vector<DominatorNode> with: (init => Vector<DominatorNode>())
+
+defn get (g:DominatorGraph, i:Int) : nodes(g)[i]
+
+defn find (g:DominatorGraph, u:Int, x:Int) :
+  val node = g[u]
+  if u == dsu(node) :
+    -1 when x > 0 else u
+  else :
+    val v = find(g, dsu(node), x + 1)
+    if v < 0 :
+      u
+    else :
+      if sdom(g[lab(g[dsu(node)])]) < sdom(g[lab(node)]) :
+        set-lab(node, lab(g[dsu(node)]))
+      set-dsu(node, v)
+      v when x == 0 else lab(node)
+
+defn union (g:DominatorGraph, u:Int, v:Int) : ;; Add an edge u-->v
+  set-dsu(g[v], u)
+
+defn dfs0 (g:DominatorGraph, u:Int) :
+  var T:Int = 0
+  let loop (u:Int = u) :
+    T = T + 1
+    set-arr(g[u], T)
+    set-rev(g[T], u)
+    set-lab(g[T], T)
+    set-sdom(g[T], T)
+    set-dsu(g[T], T)
+    for w in nbrs(g[u]) do :
+      if arr(g[w]) == 0 :
+        loop(w)
+        set-par(g[arr(g[w])], arr(g[u]))
+      add(rg(g[arr(g[w])]), arr(g[u]))
+  T
+
+defn dump (g:DominatorGraph) :
+  let loop (u:Int = 1, p:Int = 1, d:Int = 0) :
+    for j in 0 to d do: print("  ")
+    println(u)
+    for w in tree(g[u]) do :
+      if w != p :
+        loop(w, u, d + 1)
+
+defn to-dominator-tree (g:DominatorGraph) -> Seq<KeyValue<Int,Tuple<Int>>> :
+  generate<KeyValue<Int, Tuple<Int>>> :
+    let loop (u:Int = 1, p:Int = 1) :
+      val children = to-tuple $ for w in tree(g[u]) filter : w != p
+      val out-children = to-tuple $ for c in children seq : id(g[c])
+      yield(id(g[u]) => out-children)
+      for w in children do :
+        loop(w, u)
+
+defn DominatorTree (iinput:Seqable<KeyValue<Int,Tuple<Int>>>) -> Tuple<KeyValue<Int,Tuple<Int>>> :
+  val g = DominatorGraph()
+  val input = to-tuple $ iinput
+  println("INPUT = %_" % [input])
+  val aliases = IntTable<Int>()
+  for (elt in input, i in 1 to false) do :
+    aliases[key(elt)] = i
+  add(nodes(g), DominatorNode(-1, []))
+  for kv in input do :
+    val nbrs = to-tuple $ for c in value(kv) seq : aliases[c]
+    add(nodes(g), DominatorNode(key(kv), nbrs)) 
+  val n = dfs0(g, 1)
+  for i in n through 1 by -1 do :
+    for j in 0 to length(rg(g[i])) do :
+      set-sdom(g[i], min(sdom(g[i]), sdom(g[find(g, rg(g[i])[j], 0)])))
+    if i > 1 :
+      add(bucket(g[sdom(g[i])]), i)
+    for w in bucket(g[i]) do :
+      val v = find(g, w, 0)
+      if sdom(g[v]) == sdom(g[w]) :
+        set-dom(g[w], sdom(g[w]))
+      else :
+        set-dom(g[w], v)
+    if i > 1 :
+      union(g, par(g[i]), i)
+  for i in 2 through n do :
+    if dom(g[i]) != sdom(g[i]) :
+      set-dom(g[i], dom(g[dom(g[i])]))
+    add(tree(g[rev(g[i])]), rev(g[dom(g[i])]))
+    add(tree(g[rev(g[dom(g[i])])]), rev(g[i]))
+  val res = to-tuple $ to-dominator-tree(g)
+  println("OUTPUT = %_" % [res])
+  res
+
+defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPackage :
+  defn lookup? (values:List<KeyValue<EEqualable,EVarLocIns>>, e:EEqualable) -> False|EVarLocIns :
+    let loop (elts:List<KeyValue<EEqualable,EVarLocIns>> = values) :
+      if empty?(elts) :
+        false
+      else :
+        val elt = head(elts)
+        if cse-equal?(key(elt), e) :
+          value(elt)
+        else :
+          loop(tail(elts))
+  defn fold-in-body (e:EBody, iargs:Tuple<Int>, vt:VarTable) -> EBody :
+    val bindings = IntTable<EImm>()
+    println("CSE ...")
+    val num-writes = walk-writes(e, iargs)
+    val args = to-intset(iargs)
+    val aliases = IntTable<Int>()
+    defn mut? (n:Int) : num-writes[n] > 1
+    var found?:True|False = false
+
+    ;; TODO: SHOULD SPLIT THIS OUT AND RENAME FIRST AS SEPARATE PASS
+    val vars = to-inttable<ELocal> $ for l in locals(e) seq : n(l) => l
+    defn renameable? (n:Int) -> True|False :
+      (key?(vars, n) and not mutable?(vars[n])) or args[n]
+    defn* rename (e:ELItem) :
+      match(e) :
+        (e:EDef) :
+          match(y(e)) :
+            (y:EVar) :
+              if renameable?(n(y)) and not mut?(n(x(e))) :
+                aliases[n(x(e))] = get?(aliases, n(y), n(y))
+              sub-y(e, rename(y) as EVar)
+            (y) :
+              e
+        (e:EVar|EVarLoc|ETagof) :
+          if key?(aliases, n(e)) :
+            sub-n(e, aliases[n(e)])
+          else :
+            e
+        (e:ELive) :
+          e
+        (e) :
+          map(rename, e)
+
+    val block-tbl = analyze-basic-blocks(ins(e))
+    val graph = for b in block-tbl seq : lbl(b) => successors(b)
+    val tree = to-tuple $ DominatorTree(graph)
+    val links = to-inttable<Tuple<Int>> $ tree
+    val ins* = to-tuple $ generate<EIns> :
+      let loop (block:BBlock = next(to-seq(block-tbl)), ivalues:List<KeyValue<EEqualable,EVarLocIns>> = List()) :
+        println("+++ WALKING %_" % [lbl(block)])
+        var values = ivalues
+        defn walk (e:ELItem) -> ELItem :
+          match(e) :
+            (e:EDef|EPrim|EObjectGet|ETupleGet|ELoad|EConv|EInterpret) :
+              if mut?(n(x(e))) or not cseable?(e, mut?) :
+                e
+              else :
+                match(lookup?(values, e)) :
+                  (ne:EVarLocIns) : (found? = true, println("REPLACING %_ => %_" % [e, ne]), EDef(x(e), EVar(n(varloc(ne)))))
+                  (fe:False) :      (values = cons(e => e, values), e)
+            (e) :
+              e
+        ;; for ins in instructions(block) do : yield(walk(rename(ins)) as EIns)
+        for ins in instructions(block) do : yield(walk(ins) as EIns)
+        for cbi in links[lbl(block)] do : loop(block-tbl[cbi], values)
+
+    if found? :
+      println("--- BEFORE ---")
+      for ins in ins(e) do : println(ins)
+      println("--- AFTER  ---")
+      for ins in ins* do : println(ins)
+    sub-ins(e, ins*)
+
+  defn fold-texp (x:ETExp, vt:VarTable) :
+    val result = let loop (x:ELBigItem = x, a:Tuple<Int> = []) :
+      match(x:EDefn) : println("DEFN %_" % [n(x)])
+      match(x) :
+        (e:EFn) :
+          val new-args = to-tuple $ cat(a, args(e))
+          map(loop{_, new-args}, e)
+        (e:EBody) :
+          fold-in-body(e, a, vt)
+        (x) :
+          match(map(loop{_, a}, x)) :
+            (e:EBody) :
+              fold-in-body(e, a, vt)
+            (e) :
+              e
+    result as ETExp
+
+  map-with-var-table(fold-texp, gvt, epackage)
 
 ;============================================================
 ;=================== Closure Lifting ========================
