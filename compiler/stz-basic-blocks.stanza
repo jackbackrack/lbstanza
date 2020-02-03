@@ -150,7 +150,7 @@ public defn analyze-basic-blocks (instructions:Instructions) -> BlockTable :
     ;Generate all instructions for this block
     defn gen-instructions () :
       generate<Int|Instruction> :
-        if index > 0 :
+        if index > 0 or not empty?(predecessors[n]) :
           yield(LabelInstruction(n))
         val start = start(b)
         for i in 0 to length(b) do :
