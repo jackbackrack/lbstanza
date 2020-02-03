@@ -85,6 +85,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
+    run-pass("Constant Fold", constant-fold, "constant-fold", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
 
@@ -2368,6 +2369,111 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
 defstruct MethodDag :
   dag: Dag
   targets: Tuple<Int>
+
+;============================================================
+;==================== CONSTANT FOLD =========================
+;============================================================
+defn walk-writes (e:EBody, args:Tuple<Int>) -> IntTable<Int> :
+  val num-writes = IntTable<Int>(0)
+  for arg in args do :
+    num-writes[arg] = 1
+  defn walk-writes (e:ELItem, writer:False|EIns) :
+    match(e) :
+      (e:EVarLoc) :
+        match(writer) :
+          (writer:EIns) : num-writes[n(e)] = num-writes[n(e)] + 1
+          (writer) :      false
+      (e:EPtr|ELoad) :
+        walk-writes(loc(e), false)
+        walk-writes(x(e),   e)
+      (e:EIns) :
+        do(walk-writes{_, e}, e)
+      (e) :
+        do(walk-writes{_, false}, e)
+  for i in ins(e) do : walk-writes(i, false)
+  num-writes
+
+defn constant-fold (epackage:EPackage, gvt:VarTable) -> EPackage :
+  defn fold-in-body (e:EBody, args:Tuple<Int>, vt:VarTable) -> EBody :
+    val bindings = IntTable<EImm>()
+    ;; println("CONSTANT-FOLDING ...")
+    val num-writes = walk-writes(e, args)
+    defn walk (e:ELItem) -> ELItem :
+      match(e) :
+        (e:EVar) :
+          ;; TODO: THIS SHOULD WORK AND IS NECESSARY FOR CONSTANT FOLDING
+          ;; match(get?(bindings, n(e), e)) :
+          ;;   (b:EVar) : b
+          ;;   (b:ELiteral) : b when value(b) is-not EObject else e
+          ;;   (b) : b
+          e
+        (e:ELive) :
+          e
+        (e:EObject) :
+          ;; println("DEFINING %_ -> %_" % [n(x(e)), ELiteral(e)])
+          bindings[n(x(e))] = ELiteral(e)
+          map(walk, e)
+        (e:EDef) :
+          if num-writes[n(x(e))] < 2 :
+            match(y(e)) :
+              (y:EVar) :
+                ;; println("DEFINING %_ -> %_" % [n(x(e)), get?(bindings, n(y), y)])
+                bindings[n(x(e))] = get?(bindings, n(y), y)
+              (y:ELSLiteral|ELiteral) :
+                ;; println("DEFINING %_ -> %_" % [n(x(e)), y])
+                bindings[n(x(e))] = y
+              (y) : false
+          e
+        (e:ELoad) :
+          defn default () : map(walk, e)
+          match(loc(e)) :
+            (f:EField) :
+              match(loc(f)) :
+                (l:EDeref) :
+                  match(y(l)) :
+                    (v:EVar) :
+                      match(get?(bindings, n(v), false)) :
+                        (o:ELiteral) :
+                          match(value(o)) :
+                            (v:EObject) :
+                              ;; println("OBJ FOLDING %_ -> %_" % [e, ys(v)[index(f)]])
+                              walk(EDef(x(e), ys(v)[index(f)]))
+                            (v:Float|Double|Int|Long|Byte) :
+                              if index(f) == 0 :
+                                ;; println("LIT FOLDING %_ -> %_" % [e, ELSLiteral(v)])
+                                walk(EDef(x(e), ELSLiteral(v)))
+                              else :
+                                default()
+                            (v) :
+                              ;; println("NO  FOLDING %_ -> %_" % [e, v])
+                              default()
+                        (o) : default()
+                    (v) : default()
+                (v) : default()
+            (l) : default()
+        (e) :
+          map(walk, e)
+    val ins* = for ins in ins(e) map : walk(ins) as EIns
+    sub-ins(e, ins*)
+
+  defn fold-texp (x:ETExp, vt:VarTable) :
+    val result = let loop (x:ELBigItem = x, a:Tuple<Int> = []) :
+      ;; match(x:EDefn) : println("DEFN %_" % [n(x)])
+      match(x) :
+        (e:EFn) :
+          val new-args = to-tuple $ cat(a, args(e))
+          map(loop{_, new-args}, e)
+        (e:EBody) :
+          fold-in-body(e, a, vt)
+        (x) :
+          match(map(loop{_, a}, x)) :
+            (e:EBody) :
+              fold-in-body(e, a, vt)
+            (e) :
+              e
+    result as ETExp
+
+  map-with-var-table(fold-texp, gvt, epackage)
 
 ;============================================================
 ;=================== Closure Lifting ========================
