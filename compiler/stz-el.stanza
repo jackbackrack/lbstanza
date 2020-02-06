@@ -64,6 +64,24 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   defn run-pass (pass-name:String, f:(EPackage, EHier, VarTable) -> EPackage, suffix:String, update-tables?:True|False) :
     run-pass(pass-name, f{_, ehier, global-vt}, suffix, update-tables?)
 
+  val inlineable-multis = to-intset $ generate<Int> :
+    for e in exports(packageio(epackage)) do :
+      val rec = rec(e)
+      match(rec:MultiRec) :
+        val rid = id(rec)
+        yield(n(e)) when (package(rid) == `core and name(rid) == `do)
+
+  println("INLINEABLE-MULTIS %_" % [to-tuple $ inlineable-multis])
+
+  val inlineables = 
+    to-intset $ generate<Int> :
+      for e in exps(epackage) do :
+        match(e:EDefmethod) : yield(n(e)) when inlineable-multis[multi(e)]
+
+  println("INLINEABLE %_" % [to-tuple $ inlineables])
+
+  val no-inlineables = IntSet()
+
   ;Dump input
   ;dump(cur-package, "logs", "input")
   run-pass("Map Methods", map-methods, "mapped-methods", false)
@@ -79,14 +97,14 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Box Mutables", box-mutables, "boxed", false)
   run-pass("Detect Loops", detect-loops, "looped", false)
   run-pass("Simple Inline", simple-inline, "inlined", false)
-  run-pass("Within Package Inline", within-package-inline{_, false}, "wp-inlined", false)
+  run-pass("Within Package Inline", within-package-inline{_, false, no-inlineables}, "wp-inlined", false)
   if optimize? :
     run-pass("Remove Reified Types", force-remove-types, "removed-types", true)
   run-pass("Lambda Lift", lambda-lift, "lambda", true)
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
-    run-pass("Within Package Inline", within-package-inline{_, true}, "wp-inlined", false)
+    run-pass("Within Package Inline", within-package-inline{_, true, inlineables}, "wp-inlined", false)
     ;; run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
   run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
@@ -99,7 +117,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     ;; spit("out3.txt", cur-package)
   run-pass("Remove Unused Vars", remove-unused-vars, "remove-unused-vars", false)
 
-  ;; spit("out.txt", cur-package)
+  spit("out.txt", cur-package)
 
   ;Return processed package
   cur-package
@@ -1489,7 +1507,7 @@ defn simple-inline (epackage:EPackage) :
 ;================== within-package-inline ===================
 ;============================================================
 
-defn within-package-inline (epackage:EPackage, methods?:True|False) :
+defn within-package-inline (epackage:EPackage, methods?:True|False, inlineables:IntSet) :
   ;Table for holding inlined functions
   val inlined-functions = IntTable<ELocalFn|EDefn|EDefmethod>()
   defn add-to-inline-table (l:ELocalFn|EDefn|EDefmethod) :
@@ -1508,7 +1526,7 @@ defn within-package-inline (epackage:EPackage, methods?:True|False) :
   for exp in exps(epackage) do :
     if methods? :
       match(exp:EDefmethod) :
-        add-to-inline-table(exp) when inline?(func(exp))
+        add-to-inline-table(exp) when (inline?(func(exp)) or inlineables[n(exp)])
     else :
       match(exp:EDefn) :
         add-to-inline-table(exp) when inline?(func(exp))
@@ -1523,10 +1541,9 @@ defn within-package-inline (epackage:EPackage, methods?:True|False) :
 
     defn inline (e:ELBigItem) :
       match(e:EBody) :
-        if not methods? :
-          ;Add to inline table if appropriate
-          for l in localfns(e) do :
-            add-to-inline-table(l) when inline?(func(l))
+        ;Add to inline table if appropriate
+        for l in localfns(e) do :
+          add-to-inline-table(l) when inline?(func(l))
         ;Create buffer
         val buffer = BodyBuffer(e)
         for l in localfns(e) do :
