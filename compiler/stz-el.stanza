@@ -1483,29 +1483,26 @@ defn maybe-side-effecting? (e:EIns) -> True|False :
 defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
   val args = to-intset $ iargs
   val vars = to-inttable<ELocal> $ for l in locals(body) seq : n(l) => l
-  ;; count num reads
   val num-reads = IntTable<Int>(0)
   val num-writes = IntTable<Int>(0)
   val writers = IntTable<EIns>()
   val var-side-effecting? = IntSet()
-  val num-gotos = IntTable<Int>(0)
-  for arg in args do :
-    num-writes[arg] = 1
+  val num-gotos = IntTable<Int>(0) ;
+  for arg in args do : num-writes[arg] = 1
+
   defn pure? (ins:EIns) :
     match(ins) :
       (ins:EPrim) : op(ins) is BasicOp and op(ins) is-not GCOp|PrintStackTraceOp|FlushVMOp|CRSPOp
       (ins:EDef|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) : true
       (ins) : false
 
-  ;; record labels
+  ; record labels
   val labels = IntTable<Int>()
   for (i in ins(body), j in 0 to false) do :
     match(i:ELabel): labels[n(i)] = j
-  ;; println("LABELS:")
-  ;; for lab in labels do : println("  %_" % [lab])
 
-  ;; collect statistics including num-reads/writes on vars and label/gotos
-  ;; simulate execution to trace only reachable code
+  ; collect statistics including num-reads/writes on vars and label/gotos
+  ; simulate execution to trace only reachable code
   val walked? = IntSet()
   defn walk (e:ELItem, writer:False|EIns) :
     match(e) :
@@ -1558,7 +1555,7 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
   val unused-vars = IntSet()
   for n in keys(vars) do : add(unused-vars, n) when num-reads[n] == 0
 
-  ;; transitively remove unused vars
+  ; transitively remove unused vars
   val work = Queue<Int>()
   for v in unused-vars do : add(work, v)
   defn dec-num-reads (e:ELItem, lhs?:True|False) :
@@ -1581,24 +1578,16 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
       (ins:EIns) : do(dec-num-reads{_, false}, ins) when pure?(ins)
       (ins) :      false
      
-  ;; rename all vars through single write defs
+  ; rename all vars through single write defs
   val aliases = IntTable<Int>()
   defn renameable? (n:Int) -> True|False :
     (key?(vars, n) and not mutable?(vars[n])) or args[n]
-    ;; TODO: INLINING GLOBAL VARIABLES APPEARS TO BLOAT CODE
-    ;; else if key?(gvt, n) :
-    ;;   match(entry(gvt[n])) :
-    ;;     (e:VarEntry) : not mutable?(e)
-    ;;     (e) :          true
-    ;; else :
-    ;;   false
   defn rename (e:EIns) -> EIns :
     defn* walk (e:ELItem) :
       match(e) :
         (e:EDef) :
           match(y(e)) :
             (y:EVar) :
-              ;; if ((key?(vars, n(y)) and not mutable?(vars[n(y)])) or args[n(y)]) and num-reads[n(y)] == 1 and num-writes[n(x(e))] < 2 :
               if renameable?(n(y)) and num-writes[n(x(e))] < 2 :
                 aliases[n(x(e))] = get?(aliases, n(y), n(y))
                 add(unused-vars, n(x(e)))
@@ -1617,7 +1606,7 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
     walk(e) as EIns
   val renamed-ins = for i in ins(body) seq : rename(i)
 
-  ;; remove pure ins producing unused vars
+  ; remove pure ins producing unused vars
   defn unused? (n:Int) : unused-vars[n] and not var-side-effecting?[n]
   val new-ins = to-tuple $ generate<EIns> :
     for (i in renamed-ins, j in 0 to false) do :
@@ -1630,6 +1619,8 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
             yield(ELive(vars)) when not empty?(vars)
           (i) :
             yield(i)
+
+  ; remove goto labels immediately following if only use of label
   val peep-ins = generate<EIns> :
     let walk (j:Int = 0) :
       if j < length(new-ins) :
@@ -1646,45 +1637,20 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
           (i1) : std-walk(i1)
   val peeped-ins = to-tuple(peep-ins) 
   val new-locals = to-tuple $ for l in locals(body) filter : unused?(n(l)) == false
-  val res = EBody(new-locals, localtypes(body), localfns(body), localobjs(body), peeped-ins)
-  if false and (length(ins(body)) != length(ins(res)) or length(locals(body)) != length(locals(res))) :
-    println("\n--- STATS --->\n")
-    println("VARS %_" % [to-tuple $ for v in values(vars) seq : n(v) => mutable?(v)])
-    println("ARGS %_" % [to-tuple $ args])
-    println("NUM-READS: %_" % [to-tuple $ num-reads])
-    println("NUM-WRITES: %_" % [to-tuple $ num-writes])
-    println("UNUSED-VARS: %_" % [to-tuple $ unused-vars])
-    println("UNUSED?: %_" % [to-tuple $ for v in locals(body) seq : n(v) => unused?(n(v))])
-    println("NEW-LOCALS: %_" % [to-tuple $ for l in new-locals seq : n(l)])
-    for l in new-locals do :
-      if unused?(n(l)) != false : println("UNUSED %_ => %_" % [n(l), unused?(n(l))])
-    println("LOCALS: %_" % [to-tuple $ for l in locals(body) seq : n(l) => unused?(n(l))])
-    println("VAR-SIDE-EFFECTING?: %_" % [to-tuple $ var-side-effecting?])
-    println("ALIASES: %_" % [to-tuple $ aliases])
-    println("\n--- BEFORE --->")
-    println(body)
-    println("\n--- AFTER --->")
-    println(res)
-  res
+  EBody(new-locals, localtypes(body), localfns(body), localobjs(body), peeped-ins)
 
 defn remove-unused-vars (p:EPackage, gvt:VarTable) -> EPackage :
-  defn walk (e:ELItem, a:Tuple<Int>, enable?:True|False) -> ELItem :
+  defn walk (e:ELItem, a:Tuple<Int>) -> ELItem :
     match(e) :
       (e:EBody) :
-        remove-unused-vars(e, a, gvt) when enable? else e
+        remove-unused-vars(e, a, gvt)
       (e:EFn) :
         val new-args = to-tuple $ cat(a, args(e))
-        map(walk{_, new-args, enable?}, e)
+        map(walk{_, new-args}, e)
       (e) :
-        map(walk{_, a, enable?}, e)
-  val len = length(exps(p))
-  val ids = to-tuple $ (0 to len)
-  val lo = 0 ; 21683 ; to-int(0.9 * to-double(len)) ;; 938
-  val hi = len ; 21684 ; to-int(1.0 * to-double(len)) ;; 1173
-  ;; println("LEN %_ LO %_ HI %_" % [len, lo, hi])
+        map(walk{_, a}, e)
   defn walk-top (e:ELItem, a:Tuple<Int>, i:Int) -> ELItem :
-    val enable? = i >= lo and i < hi
-    walk(e, a, enable?)
+    walk(e, a)
   sub-exps(p, (to-tuple $ seq({walk-top(_, [], _)}, exps(p), ids)) as Tuple<ETExp>)
 
 ;============================================================
