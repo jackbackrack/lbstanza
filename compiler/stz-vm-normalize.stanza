@@ -35,6 +35,7 @@ public defn normalize (prog:VMPackage, backend:Backend) -> NormVMPackage :
   val extern-table = to-intset(seq(fid, extern-defns(prog)))
   val databuffer = DataBuffer(prog)
   val funcs* = for f in funcs(prog) map :
+    println(f)
     val func* = normalize(func(f), databuffer, backend, iotable, extern-table[id(f)])
     sub-func(f, func*)
   NormVMPackage(sub-funcs(prog, funcs*), datas(databuffer))
