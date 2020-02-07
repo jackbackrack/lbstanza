@@ -138,7 +138,7 @@ defn ensure-unique-identifiers! (epackage:EPackage) :
 ;======================= Pruning ============================
 ;============================================================
 
-val prune-trace? = false
+val prune-trace? = true
 
 ;Retrieve identifier of top-level declaration if it has one.
 defn identifier? (e:ETExp) -> Int|False :
