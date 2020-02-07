@@ -66,7 +66,9 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;Dump input
   ;dump(cur-package, "logs", "input")
   if optimize? :
+    ;; spit("out0.txt", cur-package)
     run-pass("Prune Package", prune-package, "prune", true)
+    ;; spit("out1.txt", cur-package)
   run-pass("Map Methods", map-methods, "mapped-methods", false)
   run-pass("Create Closures", create-closures, "closures", false)
   run-pass("Convert Mixes", convert-mixes, "mixes", false)
@@ -87,7 +89,9 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
+    ;; spit("out2.txt", cur-package)
     run-pass("Prune Package 2", prune-package, "prune2", true)
+    ;; spit("out3.txt", cur-package)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
 
@@ -138,7 +142,7 @@ defn ensure-unique-identifiers! (epackage:EPackage) :
 ;======================= Pruning ============================
 ;============================================================
 
-val prune-trace? = true
+val prune-trace? = false
 
 ;Retrieve identifier of top-level declaration if it has one.
 defn identifier? (e:ETExp) -> Int|False :
@@ -202,7 +206,7 @@ defn walk-reachable-defs (epackage:EPackage) -> [IntSet, IntTable<Int>] :
 
   defn walk-type (t:EType, f:Int -> ?) :
     match(t) :
-      (t:EOf|ETVar|EStructT) : f(n(t))
+      (t:EOf|EStructT) : f(n(t))
       (t:EAnd|EOr) :
         walk-type(a(t), f)
         walk-type(b(t), f)
@@ -222,15 +226,15 @@ defn walk-reachable-defs (epackage:EPackage) -> [IntSet, IntTable<Int>] :
     defn failure (n:Int) :
       if not visited?[n] :
         failure? = true
-        ;; println("SETTING TRIGGER FOR %_ ON %_" % [defo(mid), defo(n)])
+        println("SETTING TRIGGER FOR %_ ON %_" % [defo(mid), defo(n)]) when prune-trace?
         if not contains?(triggers[n], mid) :
           triggers[n] = cons(mid, triggers[n])
     do(walk-type{_, failure}, a1(func(m)))
     walk-type(a2(func(m)), failure)
-    ;; if not failure? :
-    ;;   match(tid) :
-    ;;     (tid:Int) :   println("TRIGGERING METHOD %_ FROM %_" % [defo(mid), defo(tid)])
-    ;;     (tid:False) : println("ADDING METHOD %_" % [defo(mid)])
+    if not failure? and prune-trace? :
+      match(tid) :
+        (tid:Int) :   println("TRIGGERING METHOD %_ FROM %_" % [defo(mid), defo(tid)])
+        (tid:False) : println("ADDING METHOD %_" % [defo(mid)])
     add(q, m) when not failure?
     not failure?
 
