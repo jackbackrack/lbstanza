@@ -95,7 +95,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
 
-  spit("out.txt", cur-package)
+  ;; spit("out.txt", cur-package)
   ;Return processed package
   cur-package
 
@@ -192,10 +192,57 @@ defn walk-reachable-defs (epackage:EPackage) -> [IntSet, IntTable<Int>] :
   val method-ids = IntTable<List<Int>>(List()) ;multi ids to list of their method ids
   for e in exps(epackage) do :
     match(e:EDefmethod) : method-ids[multi(e)] = cons(n(e), method-ids[multi(e)])
+  val parent-ids = IntTable<List<Int>>(List()) ;type ids to list of their parent type ids
+  for e in exps(epackage) do :
+    match(e:EDefType) :
+      for c in children(e) do :
+        parent-ids[c] = cons(n(e), parent-ids[c])
   val q = Queue<ETExp>()          ;for walking todo list
   val visited? = IntSet()         ;for not walking things twice
   val reachables = IntSet()       ;all ids traced
   val parents = IntTable<Int>(-1) ;parents ids in trace
+  val triggers = IntTable<List<Int>>(List())
+
+  defn defo (id:Int) :
+    match(get?(defs, id, id)) :
+      (e:EDefmethod) : [multi(e), id]
+      (e:ETExp) : e
+      (e:Int) : e
+
+  defn walk-type (t:EType, f:Int -> ?) :
+    match(t) :
+      (t:EOf|ETVar|EStructT) : f(n(t))
+      (t:EAnd|EOr) :
+        walk-type(a(t), f)
+        walk-type(b(t), f)
+      (t:EFnT) :
+        do(walk-type{_, f}, a(t))
+        walk-type(b(t), f)
+        walk-type(r(t) as EType, f) when r(t) is EType
+      (t) :
+        false
+    false
+
+  defn maybe-walk-type (t:False|EType, f:Int -> ?) : match(t:EType) : walk-type(t, f)
+
+  defn maybe-walk-method (mid:Int, tid:False|Int) -> True|False :
+    var failure?:True|False = false
+    val m = defs[mid] as EDefmethod
+    defn failure (n:Int) :
+      if not visited?[n] :
+        failure? = true
+        ;; println("SETTING TRIGGER FOR %_ ON %_" % [defo(mid), defo(n)])
+        if not contains?(triggers[n], mid) :
+          triggers[n] = cons(mid, triggers[n])
+    do(walk-type{_, failure}, a1(func(m)))
+    walk-type(a2(func(m)), failure)
+    ;; if not failure? :
+    ;;   match(tid) :
+    ;;     (tid:Int) :   println("TRIGGERING METHOD %_ FROM %_" % [defo(mid), defo(tid)])
+    ;;     (tid:False) : println("ADDING METHOD %_" % [defo(mid)])
+    add(q, m) when not failure?
+    not failure?
+
   defn walk-top (e:ETExp) :
     val pid = match(identifier?(e)) :
       (n:Int)   : (add(reachables, n), n)
@@ -203,6 +250,19 @@ defn walk-reachable-defs (epackage:EPackage) -> [IntSet, IntTable<Int>] :
     let walk (e:ELItem = e) :
       defn maybe-walk (id:Int) :
         if add(visited?, id) and key?(defs, id) :
+          ;process triggers registered on id
+          if key?(triggers, id) :
+            val new-ids = let loop (ids:List<Int> = triggers[id], res:List<Int> = List()) :
+              if empty?(ids) :
+                res
+              else :
+                val mid = head(ids)
+                val handled? = visited?[mid] or maybe-walk-method(mid, id)
+                loop(tail(ids), res when handled? else cons(id, res))
+            if empty?(new-ids) :
+              remove(triggers, id)
+            else :
+              triggers[id] = new-ids
           add(reachables, id)
           parents[id] = pid
           add(q, defs[id])
@@ -218,11 +278,15 @@ defn walk-reachable-defs (epackage:EPackage) -> [IntSet, IntTable<Int>] :
            EConstClosure|EClosureGet|EClosureTGet|EClosure) :
           maybe-walk(n(e))
           do(walk, e)
+        (e:EDefObject|EDefStruct|EDefType) :
+          ;; println("WALKING %_ -> PARENTS %_" % [e, parent-ids[n(e)]])
+          maybe-walk-type(parent(e), fn (n) : add(q, defs[n]))
+          for p in parent-ids[n(e)] do : add(q, defs[p])
         (e:EDefClosure) :
           maybe-walk(closure(e))
           do(walk, e)
         (e:EDefmulti) :
-          do(maybe-walk, method-ids[n(e)])
+          do(maybe-walk-method{_, false}, method-ids[n(e)])
           do(walk, e)
         ;; (e:EDefmethod|EMethod) :
         ;;   maybe-walk(multi(e))
