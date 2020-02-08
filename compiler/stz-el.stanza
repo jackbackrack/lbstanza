@@ -2373,17 +2373,15 @@ defstruct MethodDag :
 ;============================================================
 ;=================== RESOLVE MATCHES ========================
 ;============================================================
-defn resolve-matches (epackage:EPackage, gvt:VarTable) -> EPackage :
+defn resolve-matches (epackage:EPackage, ehier:EHier, gvt:VarTable) -> EPackage :
   defn resolve-in-body (e:EBody, vt:VarTable) -> EBody :
     val ins* = for i in ins(e) map :
       match(i) :
         (i:EMatch) :
           if length(ys(i)) == 1 :
-            val ys-types = map(type{vt, _}, ys(i))
-            val branch-typez = for b in branches(i) seq : types(b)
-            val all-branch-types = to-tuple $ for bts in zip-all(branch-typez) seq : reduce(EOr, bts)
-            val covered? = for (yst in ys-types, bt in all-branch-types) all? :
-              normalize(yst) == normalize(bt)
+            val ys-type = type(vt, ys(i)[0])
+            val combined-branch-type = union $ seq({types(_)[0]}, branches(i))
+            val covered? = subtype?(ehier, ys-type, combined-branch-type)
             sub-covered?(i, covered?)
           else :
             i
@@ -2396,6 +2394,11 @@ defn resolve-matches (epackage:EPackage, gvt:VarTable) -> EPackage :
         (e) : e
     result as ETExp
   map-with-var-table(resolve-texp, gvt, epackage)
+
+defn union (input-ts:Seqable<EType>) :
+  val ts = to-seq(input-ts)
+  if empty?(ts) : EBot()
+  else : reduce(EOr, ts)
 
 ;============================================================
 ;=================== Closure Lifting ========================
