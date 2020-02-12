@@ -69,14 +69,26 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
       val rec = rec(e)
       match(rec:MultiRec) :
         val rid = id(rec)
-        yield(n(e)) when (package(rid) == `core and name(rid) == `do)
+        yield(n(e)) when ((package(rid) == `core and name(rid) == `do))
 
   println("INLINEABLE-MULTIS %_" % [to-tuple $ inlineable-multis])
+
+  val inlineable-defns = to-intset $ generate<Int> :
+    for e in exports(packageio(epackage)) do :
+      val rec = rec(e)
+      match(rec:FnRec) :
+        val rid = id(rec)
+        yield(n(e)) when ((package(rid) == `core and name(rid) == `Range))
+
+  println("INLINEABLE-DEFNS %_" % [to-tuple $ inlineable-defns])
 
   val inlineables = 
     to-intset $ generate<Int> :
       for e in exps(epackage) do :
-        match(e:EDefmethod) : yield(n(e)) when inlineable-multis[multi(e)]
+        match(e) :
+          (e:EDefmethod) : yield(n(e)) when inlineable-multis[multi(e)]
+          (e:EDefn) : yield(n(e)) when inlineable-defns[n(e)]
+          (e) : false
 
   println("INLINEABLE %_" % [to-tuple $ inlineables])
 
@@ -97,25 +109,48 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Box Mutables", box-mutables, "boxed", false)
   run-pass("Detect Loops", detect-loops, "looped", false)
   run-pass("Simple Inline", simple-inline, "inlined", false)
-  run-pass("Within Package Inline", within-package-inline{_, false, no-inlineables}, "wp-inlined", false)
+  val changed0? = IntSet()
+  val changed1? = IntSet()
+  run-pass("Within Package Inline", within-package-inline{_, no-inlineables, { true }, changed0?}, "wp-inlined", false)
   if optimize? :
     run-pass("Remove Reified Types", force-remove-types, "removed-types", true)
   run-pass("Lambda Lift", lambda-lift, "lambda", true)
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
-    run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
-    run-pass("Within Package Inline", within-package-inline{_, true, inlineables}, "wp-inlined", false)
-    ;; run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
+    clear(changed0?)
+    for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
+    spit("out0.txt", cur-package)
+    run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
+      let loop (i:Int = 1, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
+      if i < 6 :
+        println("--- LOOP %_ ---%_ ENABLED?" % [i, to-tuple $ enabled?])
+        clear(changed?)
+        run-pass("Resolve Methods", resolve-methods{_, _, { enabled?[_] }, changed?}, "resolved-methods", false)
+        println("RESOLVED METHODS IN %_" % [to-tuple $ changed?])
+        run-pass("Within Package Inline", within-package-inline{_, inlineables, { enabled?[_] }, changed?}, "wp-inlined", false)
+        println("INLINED METHODS IN %_" % [to-tuple $ changed?])
+        run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { enabled?[_] }}, "eliminate-dead-code", false)
+        spit(to-string("out%_.txt" % [i * 5 + 0]), cur-package)
+        run-pass("Fold Ifs", fold-ifs{_, _, { enabled?[_] }, changed?}, "fold-ifs", false)
+        spit(to-string("out%_.txt" % [i * 5 + 1]), cur-package)
+        run-pass("Constant Fold", constant-fold{_, _, _, { enabled?[_] }, changed?}, "constant-fold", false)
+        spit(to-string("out%_.txt" % [i * 5 + 2]), cur-package)
+        run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { enabled?[_] }}, "eliminate-dead-code", false)
+        spit(to-string("out%_.txt" % [i * 5 + 3]), cur-package)
+        ;; run-pass("Add Type Annotations", add-type-annotations, "add-type-annotations", false)
+        ;; spit(to-string("out%_.txt" % [i * 5 + 4]), cur-package)
+        loop(i + 1, changed?, enabled?) when not empty?(changed?)
+  ;; ;; run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
   run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
-  if optimize? :
-    run-pass("Remove Unused Vars", remove-unused-vars, "remove-unused-vars", false)
-    run-pass("Fold Ifs", fold-ifs, "fold-ifs", false)
-    ;; run-pass("Constant Fold", constant-fold, "constant-fold", false)
+  ;; if optimize? :
+  ;;   run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
+  ;;   run-pass("Fold Ifs", fold-ifs{_, _, { true }, changed0?}, "fold-ifs", false)
+  ;;   run-pass("Constant Fold", constant-fold{_, _, _, { true }, changed0?}, "constant-fold", false)
     ;; run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
     ;; spit("out3.txt", cur-package)
-  run-pass("Remove Unused Vars", remove-unused-vars, "remove-unused-vars", false)
+  run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
 
   spit("out.txt", cur-package)
 
@@ -1507,29 +1542,39 @@ defn simple-inline (epackage:EPackage) :
 ;================== within-package-inline ===================
 ;============================================================
 
-defn within-package-inline (epackage:EPackage, methods?:True|False, inlineables:IntSet) :
+defn num-reads (epackage:EPackage) -> IntTable<Int> :
+  val num-reads = IntTable<Int>(0)
+  defn walk (e:ELItem) :
+    match(e) :
+      (e:EVar) : num-reads[n(e)] = num-reads[n(e)] + 1
+      (e)      : do(walk, e)
+  do(walk, exps(epackage))
+  num-reads
+
+defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int -> True|False, changed?:IntSet) :
   ;Table for holding inlined functions
   val inlined-functions = IntTable<ELocalFn|EDefn|EDefmethod>()
   defn add-to-inline-table (l:ELocalFn|EDefn|EDefmethod) :
     inlined-functions[n(l)] = l
       
+  val num-reads = num-reads(epackage)
+
   ;Determine whether a function should be inlined
-  defn inline? (f:EFunction) :
+  defn leaf? (body:EBody) -> True|False :
+    not (for i in ins(body) any? : i is ECall|ETCall)
+  defn inline? (n:Int, f:EFunction) :
     match(f) :
       (f:EMultifn) :
-        all?(inline?, funcs(f))
+        all?(inline?{n, _}, funcs(f))
       (f:EFn) :
+        val len = length(ins(body(f)))
         empty?(localfns(body(f))) and
         empty?(localobjs(body(f))) and
-        length(ins(body(f))) < 11 ;; 8
+        (num-reads[n] == 1 or (len < 8 or (leaf?(body(f)) and len < 11)))
 
   for exp in exps(epackage) do :
-    if methods? :
-      match(exp:EDefmethod) :
-        add-to-inline-table(exp) when (inline?(func(exp)) or inlineables[n(exp)])
-    else :
-      match(exp:EDefn) :
-        add-to-inline-table(exp) when inline?(func(exp))
+    match(exp:EDefmethod|EDefn) :
+      add-to-inline-table(exp) when (inline?(n(exp), func(exp)) or inlineables[n(exp)])
 
   defn inline-texp (e:ETExp) :
     ;Inlining a single function
@@ -1539,116 +1584,93 @@ defn within-package-inline (epackage:EPackage, methods?:True|False, inlineables:
         for f in efns find :
           arity == length(args(f))
 
-    defn inline (e:ELBigItem) :
-      match(e:EBody) :
-        ;Add to inline table if appropriate
-        for l in localfns(e) do :
-          add-to-inline-table(l) when inline?(func(l))
-        ;Create buffer
-        val buffer = BodyBuffer(e)
-        for l in localfns(e) do :
-          emit(buffer, inline(l) as ELocalFn)
-        for o in localobjs(e) do :
-          emit(buffer, inline(o) as ELocalObj)
-        for i in ins(e) do :
-          match(i:ECall|ETCall) :
-            val f* = deconstruct-function(f(i))
-            if empty?(f*) :
-              emit(buffer, i)
-            else :
-              val [fid, targs] = value!(f*)
-              match(get-inlined-function(fid, length(ys(i)))) :
-                (func:EFn) :
-                  val [ret, tail?] = match(i) :
-                    (i:ECall) : [x(i), false]
-                    (i:ETCall) : [false, true]
-                  inline-call(buffer, ret, rename-fn(func), targs, ys(i), tail?)
-                (_:False) :
+    defn inline (e:ELBigItem, tops:List<Int>) :
+      match(e) :
+        (e:EBody) :
+          ;Add to inline table if appropriate
+          for l in localfns(e) do :
+            add-to-inline-table(l) when inline?(n(l), func(l))
+          ;Create buffer
+          val buffer = BodyBuffer(e)
+          for l in localfns(e) do :
+            emit(buffer, inline(l, cons(n(l), tops)) as ELocalFn)
+          for o in localobjs(e) do :
+            emit(buffer, inline(o, tops) as ELocalObj)
+          for i in ins(e) do :
+            match(i:ECall|ETCall) :
+              val f* = deconstruct-function(f(i))
+              if empty?(f*) :
+                emit(buffer, i)
+              else :
+                val [fid, targs] = value!(f*)
+                if contains?(tops, fid) :
                   emit(buffer, i)          
+                else:
+                  match(get-inlined-function(fid, length(ys(i)))) :
+                    (func:EFn) :
+                      println("----- INLINING %_: %_" % [fid, i])
+                      val [ret, tail?] = match(i) :
+                        (i:ECall) : [x(i), false]
+                        (i:ETCall) : [false, true]
+                      for top in tops do : add(changed?, top)
+                      inline-call(buffer, ret, rename-fn(func), targs, ys(i), tail?)
+                    (_:False) :
+                      emit(buffer, i)          
+            else :
+              emit(buffer, i)
+          ;Return the body
+          to-body(buffer, true, false, false)
+        (e:EDefmethod|EDefn) :
+          if enabled?(n(e)) :
+            println("--- DEFN %_" % [n(e)])
+            val res = map(inline{_, cons(n(e), tops)}, e)
+            if changed?[n(e)] :
+              println("--- RES")
+              println(res)
+            res
           else :
-            emit(buffer, i)
-        ;Return the body
-        to-body(buffer, true, false, false)
-      else :
-        map(inline, e)        
+            e
+        (e) :
+          map(inline{_, tops}, e)        
 
     ;Inline the top level
-    inline(e) as ETExp
+    inline(e, List()) as ETExp
 
   ;Inline all top-level expressions
+  println("--- INLINING")
   sub-exps(epackage, map(inline-texp, exps(epackage)))  
 
 ;============================================================
 ;=================== remove-unused-vars =====================
 ;============================================================
 
-defn maybe-side-effecting? (e:EIns) -> True|False :
-  e is ETCall|ECall|EGoto|EBoxSet|ECheckFail
-
-defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
-  val args = to-intset $ iargs
-  val vars = to-inttable<ELocal> $ for l in locals(body) seq : n(l) => l
-  ;; count num reads
-  val num-reads = IntTable<Int>(0)
-  val num-writes = IntTable<Int>(0)
-  val writers = IntTable<EIns>()
-  val var-side-effecting? = IntSet()
+defn remove-unreachable-code (body:EBody) -> EBody :
   val num-gotos = IntTable<Int>(0)
-  for arg in args do :
-    num-writes[arg] = 1
-  defn pure? (ins:EIns) :
-    match(ins) :
-      (ins:EPrim) : op(ins) is BasicOp and op(ins) is-not GCOp|PrintStackTraceOp|FlushVMOp|CRSPOp
-      (ins:EDef|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) : true
-      (ins) : false
-
-  ;; record labels
   val labels = IntTable<Int>()
   for (i in ins(body), j in 0 to false) do :
     match(i:ELabel): labels[n(i)] = j
-  ;; println("LABELS:")
-  ;; for lab in labels do : println("  %_" % [lab])
-
-  ;; collect statistics including num-reads/writes on vars and label/gotos
-  ;; simulate execution to trace only reachable code
-  val walked? = IntSet()
-  defn walk (e:ELItem, writer:False|EIns) :
+  defn walk (e:ELItem) :
     match(e) :
-      (e:EVar|ETagof) :
-        num-reads[n(e)] = num-reads[n(e)] + 1
-      (e:EVarLoc) :
-        match(writer) :
-          (writer:EIns) :
-            add(var-side-effecting?, n(e)) when not pure?(writer)
-            num-writes[n(e)] = num-writes[n(e)] + 1
-            writers[n(e)] = writer
-          (writer) :
-            num-reads[n(e)] = num-reads[n(e)] + 1
-      (e:ELive) :
-        false
       (e:EIf) :
         num-gotos[n1(e)] = num-gotos[n1(e)] + 1
         num-gotos[n2(e)] = num-gotos[n2(e)] + 1
-        do(walk{_, false}, ys(e))
+        do(walk, ys(e))
       (e:ETypeof) :
         num-gotos[n1(e)] = num-gotos[n1(e)] + 1
         num-gotos[n2(e)] = num-gotos[n2(e)] + 1
-        walk(y(e), false)
+        walk(y(e))
       (e:EBranch|EGoto) :
         num-gotos[n(e)] = num-gotos[n(e)] + 1
-      (e:EPtr|ELoad) :
-        walk(loc(e), false)
-        walk(x(e),   e)
-      (e:EIns) :
-        do(walk{_, e}, e)
       (e) :
-        do(walk{_, false}, e)
+        do(walk, e)
+
+  val walked? = IntSet()
   let loop (pc:Int = 0) :
     defn goto (n:Int) : loop(labels[n])
     if not walked?[pc] and pc < length(ins(body)) :
       add(walked?, pc)
       val ins = ins(body)[pc]
-      walk(ins, ins)
+      walk(ins)
       match(ins) :
         (e:EIf|ETypeof) :      (goto(n1(e)), goto(n2(e)))
         (e:EReturn) :          false
@@ -1656,85 +1678,7 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
         (e:EGoto) :            goto(n(e))
         (e:EIns) :             loop(pc + 1)
 
-  val unreachable? = IntSet()
-  for j in 0 to length(ins(body)) do :
-    add(unreachable?, j) when not walked?[j]
-
-  val unused-vars = IntSet()
-  for n in keys(vars) do : add(unused-vars, n) when num-reads[n] == 0
-
-  ;; transitively remove unused vars
-  val work = Queue<Int>()
-  for v in unused-vars do : add(work, v)
-  defn dec-num-reads (e:ELItem, lhs?:True|False) :
-    match(e) :
-      (e:EVarLoc) :
-        do(dec-num-reads{_, true}, e) when not lhs?
-      (e:EVar|ETagof) :
-        num-reads[n(e)] = num-reads[n(e)] - 1
-        if num-reads[n(e)] == 0 :
-          add(work,        n(e))
-          add(unused-vars, n(e))
-      (e:EPtr|ELoad) :
-        dec-num-reads(loc(e), false)
-        dec-num-reads(x(e),   true)
-      (e) :
-        do(dec-num-reads{_, lhs?}, e)
-  while not empty?(work) :
-    val uv = pop(work)
-    match(get?(writers, uv, false)) :
-      (ins:EIns) : do(dec-num-reads{_, false}, ins) when pure?(ins)
-      (ins) :      false
-     
-  ;; rename all vars through single write defs
-  val aliases = IntTable<Int>()
-  defn renameable? (n:Int) -> True|False :
-    (key?(vars, n) and not mutable?(vars[n])) or args[n]
-    ;; TODO: INLINING GLOBAL VARIABLES APPEARS TO BLOAT CODE
-    ;; else if key?(gvt, n) :
-    ;;   match(entry(gvt[n])) :
-    ;;     (e:VarEntry) : not mutable?(e)
-    ;;     (e) :          true
-    ;; else :
-    ;;   false
-  defn rename (e:EIns) -> EIns :
-    defn* walk (e:ELItem) :
-      match(e) :
-        (e:EDef) :
-          match(y(e)) :
-            (y:EVar) :
-              ;; if ((key?(vars, n(y)) and not mutable?(vars[n(y)])) or args[n(y)]) and num-reads[n(y)] == 1 and num-writes[n(x(e))] < 2 :
-              if renameable?(n(y)) and num-writes[n(x(e))] < 2 :
-                aliases[n(x(e))] = get?(aliases, n(y), n(y))
-                add(unused-vars, n(x(e)))
-              sub-y(e, walk(y) as EVar)
-            (y) :
-              e
-        (e:EVar|EVarLoc|ETagof) :
-          if key?(aliases, n(e)) :
-            sub-n(e, aliases[n(e)])
-          else :
-            e
-        (e:ELive) :
-          ELive(to-tuple $ for e in xs(e) filter : not match(e:EVar) : key?(aliases, n(e)))
-        (e) :
-          map(walk, e)
-    walk(e) as EIns
-  val renamed-ins = for i in ins(body) seq : rename(i)
-
-  ;; remove pure ins producing unused vars
-  defn unused? (n:Int) : unused-vars[n] and not var-side-effecting?[n]
-  val new-ins = to-tuple $ generate<EIns> :
-    for (i in renamed-ins, j in 0 to false) do :
-      if not unreachable?[j] :
-        match(i) :
-          (i:EDef|EPrim|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) :
-            yield(i) when not unused?(n(x(i)))
-          (i:ELive) :
-            val vars = to-tuple $ for e in xs(i) filter : not match(e:EVar) : unused?(n(e))
-            yield(ELive(vars)) when not empty?(vars)
-          (i) :
-            yield(i)
+  val new-ins = to-tuple $ for (i in ins(body), j in 0 to false) filter : walked?[j]
   val peep-ins = generate<EIns> :
     let walk (j:Int = 0) :
       if j < length(new-ins) :
@@ -1749,62 +1693,197 @@ defn remove-unused-vars (body:EBody, iargs:Tuple<Int>, gvt:VarTable) -> EBody :
                 (i2) : std-walk(i1)
             else : std-walk(i1)
           (i1) : std-walk(i1)
-  val peeped-ins = to-tuple(peep-ins) 
-  val new-locals = to-tuple $ for l in locals(body) filter : unused?(n(l)) == false
-  val res = EBody(new-locals, localtypes(body), localfns(body), localobjs(body), peeped-ins)
-  if false and (length(ins(body)) != length(ins(res)) or length(locals(body)) != length(locals(res))) :
-    println("\n--- STATS --->\n")
-    println("VARS %_" % [to-tuple $ for v in values(vars) seq : n(v) => mutable?(v)])
-    println("ARGS %_" % [to-tuple $ args])
-    println("NUM-READS: %_" % [to-tuple $ num-reads])
-    println("NUM-WRITES: %_" % [to-tuple $ num-writes])
-    println("UNUSED-VARS: %_" % [to-tuple $ unused-vars])
-    println("UNUSED?: %_" % [to-tuple $ for v in locals(body) seq : n(v) => unused?(n(v))])
-    println("NEW-LOCALS: %_" % [to-tuple $ for l in new-locals seq : n(l)])
-    for l in new-locals do :
-      if unused?(n(l)) != false : println("UNUSED %_ => %_" % [n(l), unused?(n(l))])
-    println("LOCALS: %_" % [to-tuple $ for l in locals(body) seq : n(l) => unused?(n(l))])
-    println("VAR-SIDE-EFFECTING?: %_" % [to-tuple $ var-side-effecting?])
-    println("ALIASES: %_" % [to-tuple $ aliases])
-    println("\n--- BEFORE --->")
-    println(body)
-    println("\n--- AFTER --->")
-    println(res)
-  res
+  sub-ins(body, to-tuple $ peep-ins)
 
-defn remove-unused-vars (p:EPackage, gvt:VarTable) -> EPackage :
-  defn walk (e:ELItem, a:Tuple<Int>, enable?:True|False) -> ELItem :
+defn maybe-side-effecting? (e:EIns) -> True|False :
+  e is ETCall|ECall|EGoto|EBoxSet|ECheckFail
+
+defn pure? (ins:EIns) :
+  match(ins) :
+    (ins:EPrim) : op(ins) is BasicOp and op(ins) is-not GCOp|PrintStackTraceOp|FlushVMOp|CRSPOp
+    (ins:EDef|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) : true
+    (ins) : false
+
+defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) -> EPackage :
+  val unused-vars = IntSet()
+  val num-reads = IntTable<Int>(0)
+  val num-writes = IntTable<Int>(0)
+  val writers = IntTable<EIns>()
+  val var-side-effecting? = IntSet()
+  val all-vars = IntTable<ELocal>()
+  val all-defns = IntSet()
+  val all-args = IntSet()
+  val aliases = IntTable<Int>()
+
+  ;Collect statistics including num-reads/writes on vars
+  val walked? = IntSet()
+
+  defn analyze-body (body:EBody, iargs:Tuple<Int>) :
+    for l in locals(body) do : all-vars[n(l)] = l
+    for f in localfns(body) do : add(all-defns, n(f))
+    for arg in iargs do : (num-writes[arg] = 1, add(all-args, arg))
+    defn walk (e:ELItem, writer:False|EIns) :
+      match(e) :
+        (e:EVar|ETagof) :
+          num-reads[n(e)] = num-reads[n(e)] + 1
+        (e:EVarLoc) :
+          match(writer) :
+            (writer:EIns) :
+              add(var-side-effecting?, n(e)) when not pure?(writer)
+              num-writes[n(e)] = num-writes[n(e)] + 1
+              writers[n(e)] = writer
+            (writer) :
+              num-reads[n(e)] = num-reads[n(e)] + 1
+        (e:ELive) :
+          false
+        (e:EPtr|ELoad) :
+          walk(loc(e), false)
+          walk(x(e),   e)
+        (e:EIns) :
+          do(walk{_, e}, e)
+        (e) :
+          do(walk{_, false}, e)
+
+    for ins in body do : walk(ins, false)
+
+  defn transitively-remove-unused-vars () :
+    for n in keys(all-vars) do : add(unused-vars, n) when num-reads[n] == 0
+    val work = Queue<Int>()
+    for v in unused-vars do : add(work, v)
+    defn dec-num-reads (e:ELItem, lhs?:True|False) :
+      match(e) :
+        (e:EVarLoc) :
+          do(dec-num-reads{_, true}, e) when not lhs?
+        (e:EVar|ETagof) :
+          num-reads[n(e)] = num-reads[n(e)] - 1
+          if num-reads[n(e)] == 0 :
+            add(work,        n(e))
+            add(unused-vars, n(e))
+        (e:EPtr|ELoad) :
+          dec-num-reads(loc(e), false)
+          dec-num-reads(x(e),   true)
+        (e) :
+          do(dec-num-reads{_, lhs?}, e)
+    while not empty?(work) :
+      val uv = pop(work)
+      match(get?(writers, uv, false)) :
+        (ins:EIns) : do(dec-num-reads{_, false}, ins) when pure?(ins)
+        (ins) :      false
+
+  defn unused? (n:Int) : unused-vars[n] and not var-side-effecting?[n]
+
+  defn walk-body (body:EBody) -> EBody :
+    ;Rename all vars through single write defs.
+    defn renameable? (n:Int) -> True|False :
+      (key?(all-vars, n) and not mutable?(all-vars[n])) or all-defns[n] or all-args[n]
+    defn rename (e:EIns) -> EIns :
+      defn* walk (e:ELItem) :
+        match(e) :
+          (e:EDef) :
+            match(y(e)) :
+              (y:EVar) :
+                if renameable?(n(y)) and num-writes[n(x(e))] < 2 :
+                  aliases[n(x(e))] = get?(aliases, n(y), n(y))
+                  add(unused-vars, n(x(e)))
+                sub-y(e, walk(y) as EVar)
+              (y) :
+                e
+          (e:EVar|EVarLoc|ETagof) :
+            if key?(aliases, n(e)) :
+              sub-n(e, aliases[n(e)])
+            else :
+              e
+          (e:ELive) :
+            ELive(to-tuple $ for e in xs(e) filter : not match(e:EVar) : key?(aliases, n(e)))
+          (e) :
+            map(walk, e)
+      walk(e) as EIns
+    val renamed-ins = for i in ins(body) seq : rename(i)
+
+    ;Remove pure ins producing unused vars
+    val new-ins = to-tuple $ generate<EIns> :
+      for (i in renamed-ins, j in 0 to false) do :
+        match(i) :
+          (i:EDef|EPrim|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) :
+            yield(i) when not unused?(n(x(i)))
+          (i:ELive) :
+            val vars = to-tuple $ for e in xs(i) filter : not match(e:EVar) : unused?(n(e))
+            yield(ELive(vars)) when not empty?(vars)
+          (i) :
+            yield(i)
+
+    val new-locals = to-tuple $ for l in locals(body) filter : unused?(n(l)) == false
+    val res = EBody(new-locals, localtypes(body), localfns(body), localobjs(body), new-ins)
+
+    if false and (length(ins(body)) != length(ins(res)) or length(locals(body)) != length(locals(res))) :
+      println("\n--- STATS --->\n")
+      println("VARS %_" % [to-tuple $ for v in values(all-vars) seq : n(v) => mutable?(v)])
+      println("ARGS %_" % [to-tuple $ all-args])
+      println("NUM-READS: %_" % [to-tuple $ num-reads])
+      println("NUM-WRITES: %_" % [to-tuple $ num-writes])
+      println("UNUSED-VARS: %_" % [to-tuple $ unused-vars])
+      println("UNUSED?: %_" % [to-tuple $ for v in locals(body) seq : n(v) => unused?(n(v))])
+      println("NEW-LOCALS: %_" % [to-tuple $ for l in new-locals seq : n(l)])
+      for l in new-locals do :
+        if unused?(n(l)) != false : println("UNUSED %_ => %_" % [n(l), unused?(n(l))])
+      println("LOCALS: %_" % [to-tuple $ for l in locals(body) seq : n(l) => unused?(n(l))])
+      println("VAR-SIDE-EFFECTING?: %_" % [to-tuple $ var-side-effecting?])
+      println("ALIASES: %_" % [to-tuple $ aliases])
+      println("\n--- BEFORE --->")
+      println(body)
+      println("\n--- AFTER --->")
+      println(res)
+    res
+
+  defn analyze (e:ELItem, a:Tuple<Int>) :
     match(e) :
       (e:EBody) :
-        remove-unused-vars(e, a, gvt) when enable? else e
+        ;; println("--- ANALYZING BODY")
+        analyze-body(e, a)
+        do(analyze{_, a}, localfns(e))
+      (e:EDefn|EDefmethod) :
+        clear(aliases)
+        clear(unused-vars)
+        clear(num-reads)
+        clear(num-writes)
+        clear(writers)
+        clear(var-side-effecting?)
+        clear(all-vars)
+        clear(all-defns)
+        clear(all-args)
+        ;; println("--- ANALYZING DEFN %_ ---" % [n(e)])
+        do(analyze{_, []}, e)
       (e:EFn) :
-        val new-args = to-tuple $ cat(a, args(e))
-        map(walk{_, new-args, enable?}, e)
+        do(analyze{_, to-tuple $ cat(a, args(e))}, e)
       (e) :
-        map(walk{_, a, enable?}, e)
-  val len = length(exps(p))
-  val ids = to-tuple $ (0 to len)
-  val lo = 0 ; 21683 ; to-int(0.9 * to-double(len)) ;; 938
-  val hi = len ; 21684 ; to-int(1.0 * to-double(len)) ;; 1173
-  ;; println("LEN %_ LO %_ HI %_" % [len, lo, hi])
-  defn walk-top (e:ELItem, a:Tuple<Int>, i:Int) -> ELItem :
-    val enable? = i >= lo and i < hi
-    ;; println("TOP %_\n%_" % [i, e]) when enable?
-    ;; match(e:EDefn) : println("\n--- WALKING DEFN %_---\n" % [n(e)])
-    walk(e, a, enable?)
-  sub-exps(p, (to-tuple $ seq({walk-top(_, [], _)}, exps(p), ids)) as Tuple<ETExp>)
+        do(analyze{_, a}, e)
 
-;; defn remove-unused-vars (p:EPackage, gvt:VarTable) -> EPackage :
-;;   defn walk (e:ELItem, a:Tuple<Int>) -> ELItem :
-;;     match(e) :
-;;       (e:EBody) :
-;;         remove-unused-vars(e, a, gvt)
-;;       (e:EFn) :
-;;         val new-args = to-tuple $ cat(a, args(e))
-;;         map(walk{_, new-args}, e)
-;;       (e) :
-;;         map(walk{_, a}, e)
-;;   sub-exps(p, (to-tuple $ seq(fn (e): walk(e, []), exps(p))) as Tuple<ETExp>)
+  defn walk-top (x:ELBigItem, vt:VarTable) :
+
+    defn loop (e:ELItem) -> ELItem :
+      match(e) :
+        (e:EBody) :
+          ;; println("--- WALKING BODY %_" % [to-tuple $ aliases])
+          val body = walk-body(remove-unreachable-code(e))
+          sub-localfns(body, map(loop, localfns(e)) as Tuple<ELocalFn>)
+        (e:EDefn|EDefmethod) :
+          if enabled?(n(e)) :
+            ;; println("\n--- WALKING DEFN %_---\n" % [n(e)])
+            analyze(e, [])
+            transitively-remove-unused-vars()
+            ;; println("--- VARS %_" % [to-tuple $ keys(all-vars)])
+            analyze-freevars(map(loop, e), vt)
+          else :
+            e
+        (e) :
+          map(loop, e)
+
+    loop(x)
+
+  ;; sub-exps(p, to-tuple(seq(walk, exps(p))) as Tuple<ETExp>)
+  map-with-var-table({ walk-top(_, _) as ETExp}, gvt, p)
+
+
 
 ;============================================================
 ;================== Renaming ================================
@@ -2244,16 +2323,22 @@ defn annotate-body-instructions (e:EBody, state0:Table<Int,EType>, vt:VarTable) 
   run-inference(make-input())    
 
 defn annotate-function (e:EFn, parent-state:Table<Int,EType>, vt:VarTable) -> EFn :
+  println("ANNOTATE-FUNCTION")
   val state = IntTable<EType>()
   for (a in args(e), t in a1(e)) do :
     state[a] = t
   for v in vars(free(e)) do :
     if key?(parent-state,v) :
       state[v] = parent-state[v]
+  for elt in state do :
+    println(elt)
   val body* = annotate-body(body(e), state, vt)
   sub-body(e, body*)
 
 defn annotate-body (b:EBody, state:Table<Int,EType>, vt:VarTable) -> EBody :
+  println("ANNOTATE-BODY")
+  for elt in state do :
+    println(elt)
   val buffer = BodyBuffer(b)
   val localfn-table = to-inttable(n, localfns(b))
   val localobj-table = to-inttable(n, localobjs(b))
@@ -2275,15 +2360,19 @@ defn annotate-body (b:EBody, state:Table<Int,EType>, vt:VarTable) -> EBody :
     emit(buffer, sub-methods(o, methods*))
     
   val ins* = annotate-body-instructions(b, state, vt)
+  println("ANNOTATED BODY INSTRUCTIONS")
   for i in ins* do :
     emit(buffer, i)
     match(i) :
       (i:EAnnotate) :
         state[n(i)] = type(i)
+        println("ADDING STATE %_ -> %_" % [state[n(i)], type(i)])
       (i:EInitClosures) :
+        println("INIT CLOSURE")
         for x in xs(i) do :
           analyze-function(n(x))
       (i:ENew) :
+        println("NEW")
         analyze-obj(n(i))
       (i) : false
   to-body(buffer, true, false, false)  
@@ -2350,13 +2439,35 @@ defn erase (t:EType) :
 
 defn add-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
   defn infer (f:ETExp, vt:VarTable) :
-    val result = let loop (f:ELBigItem = analyze-freevars(f,vt)) :
+    val result = let loop (f:ELBigItem = f) :
       match(f) :
+        (f:EDefn|EDefmethod) :
+          println(">>> DEFN %_" % [n(f)])
+          ;; val res = map(loop, analyze-freevars(f, vt))
+          val res = map(loop, f)
+          println("<<< DEFN %_" % [n(f)])
+          res
         (f:EFn) : annotate-function(f, IntTable<EType>(), vt)
         (f:EBody) : annotate-body(f, IntTable<EType>(), vt)
         (f) : map(loop, f)
     result as ETExp
   map-with-var-table(infer, gvt, epackage)
+
+;; defn add-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
+;;   defn infer (f:ETExp, vt:VarTable) :
+;;     val result = let loop (f:ELBigItem = f) :
+;;       match(f) :
+;;         (f:EDefn|EDefmethod) :
+;;           println(">>> DEFN %_" % [n(f)])
+;;           val res = map(loop, f)
+;;           println("<<< DEFN %_" % [n(f)])
+;;           res
+;;         (f:EFn) : annotate-function(f, IntTable<EType>(), vt)
+;;         (f:EBody) : annotate-body(f, IntTable<EType>(), vt)
+;;         (f) : map(loop, f)
+;;     result as ETExp
+;;   println("=== TYPING")
+;;   map-with-var-table(infer, gvt, epackage)
 
 ;============================================================
 ;==================== Check Elision =========================
@@ -2603,9 +2714,9 @@ defn MethodTable (epackage:EPackage) :
   ;Launch
   driver()
 
-defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
+defn resolve-methods (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
   val method-table = MethodTable(epackage)
-  defn resolve-in-body (e:EBody, vt:VarTable) -> EBody :
+  defn resolve-in-body (e:EBody, vt:VarTable, top:False|Int) -> EBody :
     val ins* = for i in ins(e) map :
       ;Resolve target of call
       defn resolve-call (f:EImm, ys:Tuple<EImm>) -> EImm|False :
@@ -2619,10 +2730,14 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
             (f:ECurry) : ECurry(EVar(n), targs(f))
         match(fid:Int) :
           val ys-types = map(type{vt, _}, ys)
-          ;; print("RESOLVING %_%_ " % [fid, ys-types])          
+          print("RESOLVING %_%_ " % [fid, ys-types])
           match(resolve-target(method-table, fid, ys-types)) :
-            (n:Int) : sub-fid(n) ; (val res = sub-fid(n), println("-> %_" % [res]), res)
-            (n:False) : false ; (println("") false)
+            (n:Int) :
+              match(top:Int) : (println(" -> FOUND %_" % [n]), add(changed?, top))
+              sub-fid(n)
+            (n:False) :
+              println("")
+              false 
             
       ;Resolve calls and tcalls
       match(i) :
@@ -2633,12 +2748,18 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
         (i) : i
     sub-ins(e, ins*)
   defn resolve-texp (x:ETExp, vt:VarTable) :
-    ;; match(x:EDefn) : println("--- DEFN %_" % [n(x)])
-    val result = let loop (x:ELBigItem = x) :
-      match(map(loop, x)) :
-        (e:EBody) : resolve-in-body(e,vt)
-        (e) : e
+    val result = let loop (x:ELBigItem = x, top:False|Int = false) :
+      match(x) :
+        (e:EDefmethod|EDefn) :
+          if enabled?(n(e)) :
+            println("--- DEFN %_" % [n(e)])
+            map(loop{_, n(e)}, e)
+          else:
+            e
+        (e:EBody) :            resolve-in-body(e,vt,top)
+        (e) :                  map(loop{_, top}, e)
     result as ETExp
+  println("=== RESOLVING-METHODS")
   map-with-var-table(resolve-texp, gvt, epackage)
 
 defstruct MethodDag :
@@ -2724,8 +2845,8 @@ defn match-match (return:() -> Void, vt:VarTable, inz:Seq<[Int,EIns]>, arg:Int) 
   match-x(return, inz, check)
 
 defn trace-if (inz:Seq<[Int,EIns]>, i:Int) :
-  if not empty?(inz) :
-    println("MATCHED %_: %_" % [i, peek(inz)])
+  ;; if not empty?(inz) :
+  ;;   println("MATCHED %_: %_" % [i, peek(inz)])
   false
 
 defn match-if-match (inz:Seq<[Int,EIns]>, vt:VarTable) -> Maybe<InsRewrite> :
@@ -2786,8 +2907,8 @@ defn match-if-match (inz:Seq<[Int,EIns]>, vt:VarTable) -> Maybe<InsRewrite> :
     else :
       One(InsRewrite(if-off, EIf(n(branches(match-ins)[0]), n(branches(match-ins)[1]), false, ys(if-ins))))
 
-defn fold-ifs (epackage:EPackage, gvt:VarTable) -> EPackage :
-  defn fold-in-body (e:EBody, vt:VarTable) -> EBody :
+defn fold-ifs (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
+  defn fold-in-body (e:EBody, top:False|Int, vt:VarTable) -> EBody :
     ;; println("--- BEFORE ---")
     ;; for (ins in ins(e), i in 0 to false) do: println("%_: %_" % [i, ins])
     val inz = zip(0 to false, ins(e))
@@ -2806,23 +2927,24 @@ defn fold-ifs (epackage:EPackage, gvt:VarTable) -> EPackage :
     if empty?(rewrites) :
       e
     else :
-      if not empty?(rewrites): for ins in ins(e) do : println(ins)
+      ;; if not empty?(rewrites): for ins in ins(e) do : println(ins)
       val new-ins = to-tuple $ for (ins in ins(e), j in 0 to false) seq :
         if empty?(rewrites) :
           ins
         else :
           val rewrite = peek(rewrites)
           if j == off(rewrite) :
+            add(changed?, top as Int) when top is Int
             (pop(rewrites), new-ins(rewrite)) ;; println("REWRITING %_: %_" % [j, new-ins(rewrite)])
           else :
             ins
       sub-ins(e, new-ins)
   defn resolve-texp (x:ETExp, vt:VarTable) :
-    val result = let loop (x:ELBigItem = x) :
-      ;; match(x:EDefn|EDefmethod) : println("IF-WALKING %_" % [n(x)])
-      match(map(loop, x)) :
-        (e:EBody) : fold-in-body(e,vt)
-        (e) : e
+    val result = let loop (x:ELBigItem = x, top:Int|False = false) :
+      match(x) :
+        (x:EDefn|EDefmethod) : analyze-freevars(map(loop{_, n(x)}, x), vt) when enabled?(n(x)) else x
+        (e:EBody) :            fold-in-body(e,top,vt)
+        (e) :                  map(loop{_, top}, e)
     result as ETExp
   map-with-var-table(resolve-texp, gvt, epackage)
 
@@ -2849,9 +2971,36 @@ defn walk-writes (e:EBody, args:Tuple<Int>) -> IntTable<Int> :
   for i in ins(e) do : walk-writes(i, false)
   num-writes
 
-defn constant-fold (epackage:EPackage, gvt:VarTable) -> EPackage :
-  defn fold-in-body (e:EBody, args:Tuple<Int>, vt:VarTable) -> EBody :
+defn disjoint? (ehier:EHier, t1:EType, t2:EType) -> True|False :
+  not (subtype?(ehier, t1, t2) or subtype?(ehier, t2, t1))
+
+defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
+  defn fold-in-body (e:EBody, top:False|Int, args:Tuple<Int>, vt:VarTable) -> EBody :
     val bindings = IntTable<EImm>()
+    defn type* (e:EImm) :
+      match(e) :
+        (e:ELiteral|ELSLiteral) :
+          match(value(e)) :
+            (v:EObject) : EOf(n(v))
+            (v) : type(vt, e)
+        (e:EVar) :
+          match(get?(bindings, n(e))) :
+           (e:ELiteral|ELSLiteral) : type*(e)
+           (f:False) : type(vt, e)
+        (e) :
+          type(vt, e)
+    defn constant? (e:EImm) :
+      match(e) :
+       (e:ELiteral|ELSLiteral) : true
+       (e:EVar) :
+         val b  = get?(bindings, n(e))
+         match(b:ELiteral|ELSLiteral) : value(b) is-not EObject
+       (e) : false
+    defn constant-value (e:EImm) :
+      match(e) :
+        (e:ELiteral|ELSLiteral) : value(e)
+        (e:EVar) : constant-value(bindings[n(e)])
+    defn maybe-changed (n:False|Int) : match(n:Int) : add(changed?, n)
     ;; println("CONSTANT-FOLDING ...")
     val num-writes = walk-writes(e, args)
     defn walk (e:ELItem) -> ELItem :
@@ -2866,20 +3015,84 @@ defn constant-fold (epackage:EPackage, gvt:VarTable) -> EPackage :
         (e:ELive) :
           e
         (e:EObject) :
-          ;; println("DEFINING %_ -> %_" % [n(x(e)), ELiteral(e)])
+          println("DEFINING %_ -> %_" % [n(x(e)), ELiteral(e)])
           bindings[n(x(e))] = ELiteral(e)
           map(walk, e)
         (e:EDef) :
           if num-writes[n(x(e))] < 2 :
             match(y(e)) :
               (y:EVar) :
-                ;; println("DEFINING %_ -> %_" % [n(x(e)), get?(bindings, n(y), y)])
+                println("DEFINING %_ -> %_" % [n(x(e)), get?(bindings, n(y), y)])
                 bindings[n(x(e))] = get?(bindings, n(y), y)
               (y:ELSLiteral|ELiteral) :
-                ;; println("DEFINING %_ -> %_" % [n(x(e)), y])
+                println("DEFINING %_ -> %_" % [n(x(e)), y])
                 bindings[n(x(e))] = y
               (y) : false
           e
+        (i:EPrim) :
+          defn result (value) :
+            val lit = ELiteral(value)
+            println("FOLDING %_ -> %_" % [i, lit])
+            bindings[n(x(i))] = lit
+            maybe-changed(top)
+            EDef(x(i), lit)
+          println("CONSIDERING %_ -> %_" % [i, map(constant?, ys(i))])
+          if all?(constant?, ys(i)) :
+            val args = map(constant-value, ys(i))
+            if all?({ _ is Int}, args) :
+              match(op(i)) :
+                (o:IntAddOp) : result((args[0] as Int) + (args[1] as Int))
+                (o:IntSubOp) : result((args[0] as Int) - (args[1] as Int))
+                (o:IntMulOp) : result((args[0] as Int) * (args[1] as Int))
+                (o:IntDivOp) : result((args[0] as Int) / (args[1] as Int))
+                (o:IntModOp) : result((args[0] as Int) % (args[1] as Int))
+                (o:IntLtOp) :  result((args[0] as Int) < (args[1] as Int))
+                (o:IntGtOp) :  result((args[0] as Int) > (args[1] as Int))
+                (o:IntLeOp) :  result((args[0] as Int) <= (args[1] as Int))
+                (o:IntGeOp) :  result((args[0] as Int) >= (args[1] as Int))
+                (o:IntNegOp) :  result(negate(args[0] as Int))
+                (o:EqOp) :  result(args[0] == args[1])
+                (o:NeOp) :  result(args[0] != args[1])
+                (o) : i
+            else :
+              i
+          else :
+            i
+        (i:EIf) :
+          println("CONSIDERING %_ -> %_" % [i, map(constant?, ys(i))])
+          defn result (res:True|False) :
+            println("FOLDING %_ -> %_" % [i, res])
+            maybe-changed(top)
+            EGoto(n1(i) when res else n2(i))
+          if all?(constant?, ys(i)) :
+            val args = map(constant-value, ys(i))
+            if all?({_ is Int}, args) :
+              match(op(i)) :
+                (o:IntLtOp) :  result((args[0] as Int) < (args[1] as Int))
+                (o:IntGtOp) :  result((args[0] as Int) > (args[1] as Int))
+                (o:IntLeOp) :  result((args[0] as Int) <= (args[1] as Int))
+                (o:IntGeOp) :  result((args[0] as Int) >= (args[1] as Int))
+                (o:EqOp) :  result(args[0] == args[1])
+                (o:NeOp) :  result(args[0] != args[1])
+                (o) : i
+            else :
+              i
+          else :
+            i
+        (i:EMatch) :
+          val ys-types = map(type*, ys(i))
+          println("TRYING TO FOLD %_ TYPES %_" % [i, ys-types])
+          label<EIns> return :
+            for b in branches(i) do :
+              println("--- SUBTYPE? %_ DISJOINT? %_" % [to-tuple $ seq(subtype?{ehier, _, _}, ys-types, types(b)), to-tuple $ seq(disjoint?{ehier, _, _}, ys-types, types(b))])
+              if all?(subtype?{ehier, _, _}, ys-types, types(b)) :
+                println("---- FOLDING %_" % [b])
+                maybe-changed(top)
+                return(EGoto(n(b)))
+              else if not any?(disjoint?{ehier, _, _}, ys-types, types(b)) :
+                println("---- ABORTING %_" % [b])
+                return(i)
+            i
         (e:ELoad) :
           defn default () : map(walk, e)
           match(loc(e)) :
@@ -2893,10 +3106,12 @@ defn constant-fold (epackage:EPackage, gvt:VarTable) -> EPackage :
                           match(value(o)) :
                             (v:EObject) :
                               ;; println("OBJ FOLDING %_ -> %_" % [e, ys(v)[index(f)]])
+                              maybe-changed(top)
                               walk(EDef(x(e), ys(v)[index(f)]))
                             (v:Float|Double|Int|Long|Byte) :
                               if index(f) == 0 :
                                 ;; println("LIT FOLDING %_ -> %_" % [e, ELSLiteral(v)])
+                                maybe-changed(top)
                                 walk(EDef(x(e), ELSLiteral(v)))
                               else :
                                 default()
@@ -2913,20 +3128,18 @@ defn constant-fold (epackage:EPackage, gvt:VarTable) -> EPackage :
     sub-ins(e, ins*)
 
   defn fold-texp (x:ETExp, vt:VarTable) :
-    val result = let loop (x:ELBigItem = x, a:Tuple<Int> = []) :
-      ;; match(x:EDefn) : println("DEFN %_" % [n(x)])
+    val result = let loop (x:ELBigItem = x, top:Int|False = false, a:Tuple<Int> = []) :
       match(x) :
+        (e:EDefn|EDefmethod) :
+          println("DEFN %_" % [n(e)]) when enabled?(n(e))
+          analyze-freevars(map(loop{_, n(e), []}, e), vt) when enabled?(n(e)) else e
         (e:EFn) :
           val new-args = to-tuple $ cat(a, args(e))
-          map(loop{_, new-args}, e)
+          map(loop{_, top, new-args}, e)
         (e:EBody) :
-          fold-in-body(e, a, vt)
+          fold-in-body(e, top, a, vt)
         (x) :
-          match(map(loop{_, a}, x)) :
-            (e:EBody) :
-              fold-in-body(e, a, vt)
-            (e) :
-              e
+          map(loop{_, top, a}, x)
     result as ETExp
 
   map-with-var-table(fold-texp, gvt, epackage)
@@ -3167,7 +3380,7 @@ defn to-dominator-tree (g:DominatorGraph) -> Seq<KeyValue<Int,Tuple<Int>>> :
 defn DominatorTree (iinput:Seqable<KeyValue<Int,Tuple<Int>>>) -> Tuple<KeyValue<Int,Tuple<Int>>> :
   val g = DominatorGraph()
   val input = to-tuple $ iinput
-  println("INPUT = %_" % [input])
+  ;; println("INPUT = %_" % [input])
   val aliases = IntTable<Int>()
   for (elt in input, i in 1 to false) do :
     aliases[key(elt)] = i
@@ -3195,7 +3408,7 @@ defn DominatorTree (iinput:Seqable<KeyValue<Int,Tuple<Int>>>) -> Tuple<KeyValue<
     add(tree(g[rev(g[i])]), rev(g[dom(g[i])]))
     add(tree(g[rev(g[dom(g[i])])]), rev(g[i]))
   val res = to-tuple $ to-dominator-tree(g)
-  println("OUTPUT = %_" % [res])
+  ;; println("OUTPUT = %_" % [res])
   res
 
 defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPackage :
@@ -3211,7 +3424,7 @@ defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPack
           loop(tail(elts))
   defn fold-in-body (e:EBody, iargs:Tuple<Int>, vt:VarTable) -> EBody :
     val bindings = IntTable<EImm>()
-    println("CSE ...")
+    ;; println("CSE ...")
     val num-writes = walk-writes(e, iargs)
     val args = to-intset(iargs)
     val aliases = IntTable<Int>()
@@ -3248,7 +3461,7 @@ defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPack
     val links = to-inttable<Tuple<Int>> $ tree
     val ins* = to-tuple $ generate<EIns> :
       let loop (block:BBlock = next(to-seq(block-tbl)), ivalues:List<KeyValue<EEqualable,EVarLocIns>> = List()) :
-        println("+++ WALKING %_" % [lbl(block)])
+        ;; println("+++ WALKING %_" % [lbl(block)])
         var values = ivalues
         defn walk (e:ELItem) -> ELItem :
           match(e) :
@@ -3257,7 +3470,7 @@ defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPack
                 e
               else :
                 match(lookup?(values, e)) :
-                  (ne:EVarLocIns) : (found? = true, println("REPLACING %_ => %_" % [e, ne]), EDef(x(e), EVar(n(varloc(ne)))))
+                  (ne:EVarLocIns) : (found? = true, EDef(x(e), EVar(n(varloc(ne))))) ;println("REPLACING %_ => %_" % [e, ne])
                   (fe:False) :      (values = cons(e => e, values), e)
             (e) :
               e
@@ -3265,16 +3478,16 @@ defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPack
         for ins in instructions(block) do : yield(walk(ins) as EIns)
         for cbi in links[lbl(block)] do : loop(block-tbl[cbi], values)
 
-    if found? :
-      println("--- BEFORE ---")
-      for ins in ins(e) do : println(ins)
-      println("--- AFTER  ---")
-      for ins in ins* do : println(ins)
+    ;; if found? :
+    ;;   println("--- BEFORE ---")
+    ;;   for ins in ins(e) do : println(ins)
+    ;;   println("--- AFTER  ---")
+    ;;   for ins in ins* do : println(ins)
     sub-ins(e, ins*)
 
   defn fold-texp (x:ETExp, vt:VarTable) :
     val result = let loop (x:ELBigItem = x, a:Tuple<Int> = []) :
-      match(x:EDefn) : println("DEFN %_" % [n(x)])
+      ;; match(x:EDefn) : println("DEFN %_" % [n(x)])
       match(x) :
         (e:EFn) :
           val new-args = to-tuple $ cat(a, args(e))
@@ -3314,7 +3527,7 @@ defn resolve-matches (epackage:EPackage, gvt:VarTable) -> EPackage :
     sub-ins(e, ins*)
   defn resolve-texp (x:ETExp, vt:VarTable) :
     val result = let loop (x:ELBigItem = x) :
-      ;; match(x:EDefn) : println("--- RM %_" % [n(x)])
+      ;; match(x:EDefn|EDefmethod) : println("--- RM %_" % [n(x)])
       match(map(loop, x)) :
         (e:EBody) : resolve-in-body(e,vt)
         (e) : e
@@ -3452,6 +3665,7 @@ defn lift-closures (epackage:EPackage, gvt:VarTable) -> EPackage :
     to-body(buffer, true, false, true)
 
   defn analyze (e:ELBigItem, vt:VarTable) -> ELBigItem :
+    ;; match(e:EDefn|EDefmethod) : println("--- LIFTING %_" % [n(e)])
     match(map(analyze{_, vt},e)) :
       (e:EBody) : lift-body(e,vt)
       (e) : e
