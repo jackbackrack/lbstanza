@@ -1597,27 +1597,28 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
           for o in localobjs(e) do :
             emit(buffer, inline(o, tops) as ELocalObj)
           for i in ins(e) do :
-            match(i:ECall|ETCall) :
-              val f* = deconstruct-function(f(i))
-              if empty?(f*) :
+            match(i) :
+              (i:ECall|ETCall) :
+                val f* = deconstruct-function(f(i))
+                if empty?(f*) :
+                  emit(buffer, i)
+                else :
+                  val [fid, targs] = value!(f*)
+                  if contains?(tops, fid) :
+                    emit(buffer, i)          
+                  else:
+                    match(get-inlined-function(fid, length(ys(i)))) :
+                      (func:EFn) :
+                        println("----- INLINING %_: %_" % [fid, i])
+                        val [ret, tail?] = match(i) :
+                          (i:ECall) : [x(i), false]
+                          (i:ETCall) : [false, true]
+                        for top in tops do : add(changed?, top)
+                        inline-call(buffer, ret, rename-fn(func), targs, ys(i), tail?)
+                      (_:False) :
+                        emit(buffer, i)          
+              (i) :
                 emit(buffer, i)
-              else :
-                val [fid, targs] = value!(f*)
-                if contains?(tops, fid) :
-                  emit(buffer, i)          
-                else:
-                  match(get-inlined-function(fid, length(ys(i)))) :
-                    (func:EFn) :
-                      println("----- INLINING %_: %_" % [fid, i])
-                      val [ret, tail?] = match(i) :
-                        (i:ECall) : [x(i), false]
-                        (i:ETCall) : [false, true]
-                      for top in tops do : add(changed?, top)
-                      inline-call(buffer, ret, rename-fn(func), targs, ys(i), tail?)
-                    (_:False) :
-                      emit(buffer, i)          
-            else :
-              emit(buffer, i)
           ;Return the body
           to-body(buffer, true, false, false)
         (e:EDefmethod|EDefn) :
@@ -1735,6 +1736,8 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
           num-reads[n(e)] = num-reads[n(e)] + 1
         (e:EVarLoc) :
           match(writer) :
+            (writer:EInitClosures) :
+              num-reads[n(e)] = num-reads[n(e)] + 1
             (writer:EIns) :
               add(var-side-effecting?, n(e)) when not pure?(writer)
               num-writes[n(e)] = num-writes[n(e)] + 1
@@ -1807,12 +1810,19 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
       walk(e) as EIns
     val renamed-ins = for i in ins(body) seq : rename(i)
 
+    defn unused-localfn? (n:Int) : 
+      num-reads[n] <= 1 ;Has at least InitClosure ref
+      
     ;Remove pure ins producing unused vars
     val new-ins = to-tuple $ generate<EIns> :
       for (i in renamed-ins, j in 0 to false) do :
         match(i) :
           (i:EDef|EPrim|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) :
             yield(i) when not unused?(n(x(i)))
+          (i:EInitClosures) :
+            val xs* = for x in xs(i) filter : not unused-localfn?(n(x))
+            if not empty?(xs*) :
+              yield(EInitClosures(to-tuple(xs*), info(i)))
           (i:ELive) :
             val vars = to-tuple $ for e in xs(i) filter : not match(e:EVar) : unused?(n(e))
             yield(ELive(vars)) when not empty?(vars)
@@ -1820,7 +1830,8 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
             yield(i)
 
     val new-locals = to-tuple $ for l in locals(body) filter : unused?(n(l)) == false
-    val res = EBody(new-locals, localtypes(body), localfns(body), localobjs(body), new-ins)
+    val new-localfns = to-tuple $ for f in localfns(body) filter : unused-localfn?(n(f)) == false 
+    val res = EBody(new-locals, localtypes(body), new-localfns, localobjs(body), new-ins)
 
     if false and (length(ins(body)) != length(ins(res)) or length(locals(body)) != length(locals(res))) :
       println("\n--- STATS --->\n")
@@ -1833,6 +1844,7 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
       println("NEW-LOCALS: %_" % [to-tuple $ for l in new-locals seq : n(l)])
       for l in new-locals do :
         if unused?(n(l)) != false : println("UNUSED %_ => %_" % [n(l), unused?(n(l))])
+      println("NEW-LOCALFNS: %_" % [to-tuple $ for l in new-localfns seq : n(l)])
       println("LOCALS: %_" % [to-tuple $ for l in locals(body) seq : n(l) => unused?(n(l))])
       println("VAR-SIDE-EFFECTING?: %_" % [to-tuple $ var-side-effecting?])
       println("ALIASES: %_" % [to-tuple $ aliases])
@@ -1867,19 +1879,24 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
 
   defn walk-top (x:ELBigItem, vt:VarTable) :
     defn loop (e:ELItem) -> ELItem :
+      defn exec (e:ETExp) :
+        val pe = remove-unreachable-code(e)
+        analyze(pe, [])
+        transitively-remove-unused-vars()
+        ;; println("--- VARS %_" % [to-tuple $ keys(all-vars)])
+        analyze-freevars(map(loop, pe), vt)
       match(e) :
         (e:EBody) :
           ;; println("--- WALKING BODY %_" % [to-tuple $ aliases])
           val body = walk-body(e)
           sub-localfns(body, map(loop, localfns(e)) as Tuple<ELocalFn>)
+        (e:EInit) :
+          ;; println("\n--- WALKING INIT ---\n")
+          exec(e)
         (e:EDefn|EDefmethod) :
           if enabled?(n(e)) :
             println("\n--- WALKING DEFN %_---\n" % [n(e)])
-            val pe = remove-unreachable-code(e)
-            analyze(pe, [])
-            transitively-remove-unused-vars()
-            ;; println("--- VARS %_" % [to-tuple $ keys(all-vars)])
-            analyze-freevars(map(loop, pe), vt)
+            exec(e)
           else :
             e
         (e) :
@@ -2998,7 +3015,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
         (e:EVar) :
           match(get?(bindings, n(e))) :
            (e:ELiteral|ELSLiteral) : type*(e)
-           (f:False) : type(vt, e)
+           (f) : type(vt, e)
         (e) :
           type(vt, e)
     defn constant? (e:EImm) :
