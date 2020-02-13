@@ -122,7 +122,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     spit("out0.txt", cur-package)
     run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
       let loop (i:Int = 1, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
-      if i < 6 :
+      if i < 10 :
         println("--- LOOP %_ ---%_ ENABLED?" % [i, to-tuple $ enabled?])
         clear(changed?)
         run-pass("Resolve Methods", resolve-methods{_, _, { enabled?[_] }, changed?}, "resolved-methods", false)
@@ -130,15 +130,15 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
         run-pass("Within Package Inline", within-package-inline{_, inlineables, { enabled?[_] }, changed?}, "wp-inlined", false)
         println("INLINED METHODS IN %_" % [to-tuple $ changed?])
         run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { enabled?[_] }}, "eliminate-dead-code", false)
-        spit(to-string("out%_.txt" % [i * 5 + 0]), cur-package)
-        run-pass("Fold Ifs", fold-ifs{_, _, { enabled?[_] }, changed?}, "fold-ifs", false)
-        spit(to-string("out%_.txt" % [i * 5 + 1]), cur-package)
+        spit(to-string("out-il-%_.txt" % [i]), cur-package)
+        run-pass("Shrink Ifs", shrink-ifs{_, _, { enabled?[_] }, changed?}, "shrink-ifs", false)
+        spit(to-string("out-fi-%_.txt" % [i]), cur-package)
         run-pass("Constant Fold", constant-fold{_, _, _, { enabled?[_] }, changed?}, "constant-fold", false)
-        spit(to-string("out%_.txt" % [i * 5 + 2]), cur-package)
+        spit(to-string("out-cf-%_.txt" % [i]), cur-package)
         run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { enabled?[_] }}, "eliminate-dead-code", false)
-        spit(to-string("out%_.txt" % [i * 5 + 3]), cur-package)
-        ;; run-pass("Add Type Annotations", add-type-annotations, "add-type-annotations", false)
-        ;; spit(to-string("out%_.txt" % [i * 5 + 4]), cur-package)
+        spit(to-string("out-ed-%_.txt" % [i]), cur-package)
+        run-pass("Update Type Annotations", update-type-annotations{_, _, { enabled?[_] }}, "update-type-annotations", false)
+        spit(to-string("out-ta-%_.txt" % [i]), cur-package)
         loop(i + 1, changed?, enabled?) when not empty?(changed?)
   ;; ;; run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
   run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
@@ -146,11 +146,11 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
   ;; if optimize? :
   ;;   run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
-  ;;   run-pass("Fold Ifs", fold-ifs{_, _, { true }, changed0?}, "fold-ifs", false)
+  ;;   run-pass("Shrink Ifs", shrink-ifs{_, _, { true }, changed0?}, "shrink-ifs", false)
   ;;   run-pass("Constant Fold", constant-fold{_, _, _, { true }, changed0?}, "constant-fold", false)
     ;; run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
     ;; spit("out3.txt", cur-package)
-  run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
+  ;; run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
 
   spit("out.txt", cur-package)
 
@@ -1562,19 +1562,19 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
   ;Determine whether a function should be inlined
   defn leaf? (body:EBody) -> True|False :
     not (for i in ins(body) any? : i is ECall|ETCall)
-  defn inline? (n:Int, f:EFunction) :
+  defn inline? (n:Int, f:EFunction, top?:True|False) :
     match(f) :
       (f:EMultifn) :
-        all?(inline?{n, _}, funcs(f))
+        all?(inline?{n, _, top?}, funcs(f))
       (f:EFn) :
         val len = length(ins(body(f)))
         empty?(localfns(body(f))) and
         empty?(localobjs(body(f))) and
-        (num-reads[n] == 1 or (len < 8 or (leaf?(body(f)) and len < 11)))
+        (num-reads[n] == 1 or (len < 8 or (not top? and leaf?(body(f)) and len < 11)))
 
   for exp in exps(epackage) do :
     match(exp:EDefmethod|EDefn) :
-      add-to-inline-table(exp) when (inline?(n(exp), func(exp)) or inlineables[n(exp)])
+      add-to-inline-table(exp) when (inline?(n(exp), func(exp), true) or inlineables[n(exp)])
 
   defn inline-texp (e:ETExp) :
     ;Inlining a single function
@@ -1589,7 +1589,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
         (e:EBody) :
           ;Add to inline table if appropriate
           for l in localfns(e) do :
-            add-to-inline-table(l) when inline?(n(l), func(l))
+            add-to-inline-table(l) when inline?(n(l), func(l), false)
           ;Create buffer
           val buffer = BodyBuffer(e)
           for l in localfns(e) do :
@@ -1624,9 +1624,9 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
           if enabled?(n(e)) :
             println("--- DEFN %_" % [n(e)])
             val res = map(inline{_, cons(n(e), tops)}, e)
-            if changed?[n(e)] :
-              println("--- RES")
-              println(res)
+            ;; if changed?[n(e)] :
+            ;;   println("--- RES")
+            ;;   println(res)
             res
           else :
             e
@@ -1666,17 +1666,17 @@ defn remove-unreachable-code (body:EBody) -> EBody :
 
   val walked? = IntSet()
   let loop (pc:Int = 0) :
-    defn goto (n:Int) : loop(labels[n])
+    defn goto (n:Int) : (loop(labels[n])) ; println("GOTO %_" % [n])
     if not walked?[pc] and pc < length(ins(body)) :
       add(walked?, pc)
       val ins = ins(body)[pc]
       walk(ins)
       match(ins) :
-        (e:EIf|ETypeof) :      (goto(n1(e)), goto(n2(e)))
-        (e:EReturn) :          false
-        (e:EMatch|EDispatch) : for b in branches(e) do : goto(n(b))
-        (e:EGoto) :            goto(n(e))
-        (e:EIns) :             loop(pc + 1)
+        (e:EIf|ETypeof) :          (goto(n1(e)), goto(n2(e)))
+        (e:EReturn|EEnd|ETCall) :  false
+        (e:EMatch|EDispatch) :     for b in branches(e) do : goto(n(b))
+        (e:EGoto) :                goto(n(e))
+        (e:EIns) :                 loop(pc + 1)
 
   val new-ins = to-tuple $ for (i in ins(body), j in 0 to false) filter : walked?[j]
   val peep-ins = generate<EIns> :
@@ -1694,6 +1694,13 @@ defn remove-unreachable-code (body:EBody) -> EBody :
             else : std-walk(i1)
           (i1) : std-walk(i1)
   sub-ins(body, to-tuple $ peep-ins)
+
+defn remove-unreachable-code (e:ETExp) -> ETExp :    
+  defn remove-unreachable-code-in-bodies (e:ELBigItem) :
+    match(map(remove-unreachable-code-in-bodies, e)) :
+      (e:EBody) : remove-unreachable-code(e)
+      (e) : e
+  remove-unreachable-code-in-bodies(e) as ETExp
 
 defn maybe-side-effecting? (e:EIns) -> True|False :
   e is ETCall|ECall|EGoto|EBoxSet|ECheckFail
@@ -1859,20 +1866,20 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
         do(analyze{_, a}, e)
 
   defn walk-top (x:ELBigItem, vt:VarTable) :
-
     defn loop (e:ELItem) -> ELItem :
       match(e) :
         (e:EBody) :
           ;; println("--- WALKING BODY %_" % [to-tuple $ aliases])
-          val body = walk-body(remove-unreachable-code(e))
+          val body = walk-body(e)
           sub-localfns(body, map(loop, localfns(e)) as Tuple<ELocalFn>)
         (e:EDefn|EDefmethod) :
           if enabled?(n(e)) :
-            ;; println("\n--- WALKING DEFN %_---\n" % [n(e)])
-            analyze(e, [])
+            println("\n--- WALKING DEFN %_---\n" % [n(e)])
+            val pe = remove-unreachable-code(e)
+            analyze(pe, [])
             transitively-remove-unused-vars()
             ;; println("--- VARS %_" % [to-tuple $ keys(all-vars)])
-            analyze-freevars(map(loop, e), vt)
+            analyze-freevars(map(loop, pe), vt)
           else :
             e
         (e) :
@@ -2222,7 +2229,9 @@ defn annotate-body-instructions (e:EBody, state0:Table<Int,EType>, vt:VarTable) 
       (i:EInterpret) : untrusted(x(i))
       (i:EConv) : untrusted(x(i))
       (i:EPrim) : trusted(x(i))
-      (i:ENewObject) : trusted(x(i))
+      (i:EBox) : trusted(x(i))
+      (i:EBoxGet) : trusted(x(i))
+      (i:EObjectGet) : trusted(x(i))
       (i:ECall) :
         match(x(i)) :
           (x:EVarLoc) :
@@ -2298,6 +2307,8 @@ defn annotate-body-instructions (e:EBody, state0:Table<Int,EType>, vt:VarTable) 
                         yield(IDef(n(x(i)), type(vt,y(i) as EImm), i))
                     else :
                       yield(IWrapped(i))
+                  (i:ENewObject) :
+                    yield(IDef(n(x(i)), EOf(n(i)), i))
                   (i:EMatch|EDispatch) :
                     yield(IMatch(i, inferred-var?))
                   (i:ECheck) :
@@ -2323,22 +2334,16 @@ defn annotate-body-instructions (e:EBody, state0:Table<Int,EType>, vt:VarTable) 
   run-inference(make-input())    
 
 defn annotate-function (e:EFn, parent-state:Table<Int,EType>, vt:VarTable) -> EFn :
-  println("ANNOTATE-FUNCTION")
   val state = IntTable<EType>()
   for (a in args(e), t in a1(e)) do :
     state[a] = t
   for v in vars(free(e)) do :
     if key?(parent-state,v) :
       state[v] = parent-state[v]
-  for elt in state do :
-    println(elt)
   val body* = annotate-body(body(e), state, vt)
   sub-body(e, body*)
 
 defn annotate-body (b:EBody, state:Table<Int,EType>, vt:VarTable) -> EBody :
-  println("ANNOTATE-BODY")
-  for elt in state do :
-    println(elt)
   val buffer = BodyBuffer(b)
   val localfn-table = to-inttable(n, localfns(b))
   val localobj-table = to-inttable(n, localobjs(b))
@@ -2360,19 +2365,15 @@ defn annotate-body (b:EBody, state:Table<Int,EType>, vt:VarTable) -> EBody :
     emit(buffer, sub-methods(o, methods*))
     
   val ins* = annotate-body-instructions(b, state, vt)
-  println("ANNOTATED BODY INSTRUCTIONS")
   for i in ins* do :
     emit(buffer, i)
     match(i) :
       (i:EAnnotate) :
         state[n(i)] = type(i)
-        println("ADDING STATE %_ -> %_" % [state[n(i)], type(i)])
       (i:EInitClosures) :
-        println("INIT CLOSURE")
         for x in xs(i) do :
           analyze-function(n(x))
       (i:ENew) :
-        println("NEW")
         analyze-obj(n(i))
       (i) : false
   to-body(buffer, true, false, false)  
@@ -2437,37 +2438,48 @@ defmethod print (o:OutputStream, e:EAnnotate) :
 defn erase (t:EType) :
   ETop() when reftype?(t) else t
 
-defn add-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
+defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False) -> EPackage :
+  ;Retrieve the trusted declared type of a variable
+  defn var-type (v:Int, state:Table<Int,EType>, vt:VarTable) :
+    if key?(state,v) :
+      state[v]
+    else :
+      val t = type(vt,v)
+      if lostanza?(vt,v) : erase(t)
+      else : t
+      
+  ;Update types in body
+  defn update-local-types (e:EBody, vt:VarTable) -> EBody :
+    val buffer = BodyBuffer(e)
+    val state = IntTable<EType>()
+    for e in ins(e) do :
+      match(e) :
+        (e:EAnnotate) : state[n(e)] = type(e)
+        (e) : emit(buffer, e)
+    val locals = to-tuple $ for l in locals(e) seq :
+      ELocal(n(l), var-type(n(l), state, vt), mutable?(l))
+    sub-locals(to-body(buffer), locals)
+
   defn infer (f:ETExp, vt:VarTable) :
-    val result = let loop (f:ELBigItem = f) :
+    defn update-local-types-in-bodies (e:ELBigItem) :
+      match(map(update-local-types-in-bodies, e)) :
+        (e:EBody) : update-local-types(e, vt)
+        (e) : e
+    defn process (f:ELBigItem) :
       match(f) :
         (f:EDefn|EDefmethod) :
-          println(">>> DEFN %_" % [n(f)])
-          ;; val res = map(loop, analyze-freevars(f, vt))
-          val res = map(loop, f)
-          println("<<< DEFN %_" % [n(f)])
-          res
-        (f:EFn) : annotate-function(f, IntTable<EType>(), vt)
-        (f:EBody) : annotate-body(f, IntTable<EType>(), vt)
-        (f) : map(loop, f)
-    result as ETExp
-  map-with-var-table(infer, gvt, epackage)
+          if enabled?(n(f)) :
+            val res = map(process, f)
+            println(">>> DEFN %_" % [n(f)])
+            res
+          else :
+            f
+        (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
+        (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
+        (f) : map(process, f)
+    process(analyze-freevars(f, vt)) as ETExp
 
-;; defn add-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
-;;   defn infer (f:ETExp, vt:VarTable) :
-;;     val result = let loop (f:ELBigItem = f) :
-;;       match(f) :
-;;         (f:EDefn|EDefmethod) :
-;;           println(">>> DEFN %_" % [n(f)])
-;;           val res = map(loop, f)
-;;           println("<<< DEFN %_" % [n(f)])
-;;           res
-;;         (f:EFn) : annotate-function(f, IntTable<EType>(), vt)
-;;         (f:EBody) : annotate-body(f, IntTable<EType>(), vt)
-;;         (f) : map(loop, f)
-;;     result as ETExp
-;;   println("=== TYPING")
-;;   map-with-var-table(infer, gvt, epackage)
+  map-with-var-table(infer, gvt, epackage)
 
 ;============================================================
 ;==================== Check Elision =========================
@@ -2769,7 +2781,7 @@ with:
   printer => true
 
 ;============================================================
-;====================== FOLD IFS ============================
+;===================== SHRINK IFS ===========================
 ;============================================================
 
 defstruct InsRewrite :
@@ -2907,7 +2919,7 @@ defn match-if-match (inz:Seq<[Int,EIns]>, vt:VarTable) -> Maybe<InsRewrite> :
     else :
       One(InsRewrite(if-off, EIf(n(branches(match-ins)[0]), n(branches(match-ins)[1]), false, ys(if-ins))))
 
-defn fold-ifs (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
+defn shrink-ifs (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
   defn fold-in-body (e:EBody, top:False|Int, vt:VarTable) -> EBody :
     ;; println("--- BEFORE ---")
     ;; for (ins in ins(e), i in 0 to false) do: println("%_: %_" % [i, ins])
@@ -2942,7 +2954,7 @@ defn fold-ifs (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, cha
   defn resolve-texp (x:ETExp, vt:VarTable) :
     val result = let loop (x:ELBigItem = x, top:Int|False = false) :
       match(x) :
-        (x:EDefn|EDefmethod) : analyze-freevars(map(loop{_, n(x)}, x), vt) when enabled?(n(x)) else x
+        (x:EDefn|EDefmethod) : (analyze-freevars(map(loop{_, n(x)}, x), vt) when enabled?(n(x)) else x) ; println("DEFN %_" % [n(x)])
         (e:EBody) :            fold-in-body(e,top,vt)
         (e) :                  map(loop{_, top}, e)
     result as ETExp
@@ -2981,7 +2993,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
       match(e) :
         (e:ELiteral|ELSLiteral) :
           match(value(e)) :
-            (v:EObject) : EOf(n(v))
+            (v:EObject|ENewObject) : EOf(n(v))
             (v) : type(vt, e)
         (e:EVar) :
           match(get?(bindings, n(e))) :
@@ -3004,6 +3016,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
     ;; println("CONSTANT-FOLDING ...")
     val num-writes = walk-writes(e, args)
     defn walk (e:ELItem) -> ELItem :
+      defn default () : map(walk, e)
       match(e) :
         (e:EVar) :
           ;; TODO: THIS SHOULD WORK AND IS NECESSARY FOR CONSTANT FOLDING
@@ -3015,6 +3028,10 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
         (e:ELive) :
           e
         (e:EObject) :
+          println("DEFINING %_ -> %_" % [n(x(e)), ELiteral(e)])
+          bindings[n(x(e))] = ELiteral(e)
+          map(walk, e)
+        (e:ENewObject) :
           println("DEFINING %_ -> %_" % [n(x(e)), ELiteral(e)])
           bindings[n(x(e))] = ELiteral(e)
           map(walk, e)
@@ -3051,6 +3068,10 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
                 (o:IntLeOp) :  result((args[0] as Int) <= (args[1] as Int))
                 (o:IntGeOp) :  result((args[0] as Int) >= (args[1] as Int))
                 (o:IntNegOp) :  result(negate(args[0] as Int))
+                (o:LtOp) :  result((args[0] as Int) < (args[1] as Int))
+                (o:GtOp) :  result((args[0] as Int) > (args[1] as Int))
+                (o:LeOp) :  result((args[0] as Int) <= (args[1] as Int))
+                (o:GeOp) :  result((args[0] as Int) >= (args[1] as Int))
                 (o:EqOp) :  result(args[0] == args[1])
                 (o:NeOp) :  result(args[0] != args[1])
                 (o) : i
@@ -3072,6 +3093,10 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
                 (o:IntGtOp) :  result((args[0] as Int) > (args[1] as Int))
                 (o:IntLeOp) :  result((args[0] as Int) <= (args[1] as Int))
                 (o:IntGeOp) :  result((args[0] as Int) >= (args[1] as Int))
+                (o:LtOp) :  result((args[0] as Int) < (args[1] as Int))
+                (o:GtOp) :  result((args[0] as Int) > (args[1] as Int))
+                (o:LeOp) :  result((args[0] as Int) <= (args[1] as Int))
+                (o:GeOp) :  result((args[0] as Int) >= (args[1] as Int))
                 (o:EqOp) :  result(args[0] == args[1])
                 (o:NeOp) :  result(args[0] != args[1])
                 (o) : i
@@ -3093,35 +3118,49 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
                 println("---- ABORTING %_" % [b])
                 return(i)
             i
-        (e:ELoad) :
-          defn default () : map(walk, e)
-          match(loc(e)) :
-            (f:EField) :
-              match(loc(f)) :
-                (l:EDeref) :
-                  match(y(l)) :
-                    (v:EVar) :
-                      match(get?(bindings, n(v), false)) :
-                        (o:ELiteral) :
-                          match(value(o)) :
-                            (v:EObject) :
-                              ;; println("OBJ FOLDING %_ -> %_" % [e, ys(v)[index(f)]])
-                              maybe-changed(top)
-                              walk(EDef(x(e), ys(v)[index(f)]))
-                            (v:Float|Double|Int|Long|Byte) :
-                              if index(f) == 0 :
-                                ;; println("LIT FOLDING %_ -> %_" % [e, ELSLiteral(v)])
-                                maybe-changed(top)
-                                walk(EDef(x(e), ELSLiteral(v)))
-                              else :
-                                default()
-                            (v) :
-                              ;; println("NO  FOLDING %_ -> %_" % [e, v])
-                              default()
-                        (o) : default()
-                    (v) : default()
-                (v) : default()
-            (l) : default()
+        (e:EObjectGet) :
+          match(y(e)) :
+            (y:EVar) :
+              match(get?(bindings, n(y), false)) :
+                (l:ELiteral) :
+                  match(value(l)) :
+                    (o:ENewObject) :
+                      maybe-changed(top)
+                      println("---- FOLDING %_ / %_[%_]" % [e, o, index(e)])
+                      walk(EDef(x(e), ys(o)[index(e)]))
+                    (f:False) : default()
+                (f) : default()
+            (y) : default()
+
+        ;; TODO: REQUIRES MUT? FLAG ON FIELDS
+        ;; (e:ELoad) :
+        ;;   match(loc(e)) :
+        ;;     (f:EField) :
+        ;;       match(loc(f)) :
+        ;;         (l:EDeref) :
+        ;;           match(y(l)) :
+        ;;             (v:EVar) :
+        ;;               match(get?(bindings, n(v), false)) :
+        ;;                 (o:ELiteral) :
+        ;;                   match(value(o)) :
+        ;;                     (v:EObject) :
+        ;;                       ;; println("OBJ FOLDING %_ -> %_" % [e, ys(v)[index(f)]])
+        ;;                       maybe-changed(top)
+        ;;                       walk(EDef(x(e), ys(v)[index(f)]))
+        ;;                     (v:Float|Double|Int|Long|Byte) :
+        ;;                       if index(f) == 0 :
+        ;;                         ;; println("LIT FOLDING %_ -> %_" % [e, ELSLiteral(v)])
+        ;;                         maybe-changed(top)
+        ;;                         walk(EDef(x(e), ELSLiteral(v)))
+        ;;                       else :
+        ;;                         default()
+        ;;                     (v) :
+        ;;                       ;; println("NO  FOLDING %_ -> %_" % [e, v])
+        ;;                       default()
+        ;;                 (o) : default()
+        ;;             (v) : default()
+        ;;         (v) : default()
+        ;;     (l) : default()
         (e) :
           map(walk, e)
     val ins* = for ins in ins(e) map : walk(ins) as EIns
@@ -3308,6 +3347,7 @@ defmethod cseable? (a:EDef, mut?:Int -> True|False) :
     (e:EImm) : cseable?(e, mut?)
     (e:False) : true
 
+; Based on https://tanujkhattar.wordpress.com/2016/01/11/dominator-tree-of-a-directed-graph/
 defstruct DominatorNode :
   id : Int
   nbrs : Tuple<Int>
