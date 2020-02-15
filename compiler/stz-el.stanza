@@ -25,6 +25,7 @@ defpackage stz/el :
 public defn lower-optimized (epackages:Tuple<EPackage>) -> EPackage :
   ;for p in epackages do :
   ;  dump(p, "logs", "precollapse")
+  println("L-O")
   lower(collapse(epackages), true)
 
 public defn lower-unoptimized (epackage:EPackage) -> EPackage :
@@ -36,6 +37,7 @@ public defn lower-unoptimized (epackage:EPackage) -> EPackage :
 
 defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;Reset id generation
+  println("LOWER")
   take-ids(epackage)
 
   ;Current processing package
@@ -121,8 +123,8 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
     spit("out0.txt", cur-package)
     run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
-      let loop (i:Int = 1, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
-      if i < 20 :
+    let loop (i:Int = 1, n:Int = 7, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
+      if n > 0 :
         println("--- LOOP %_ ---%_ ENABLED?" % [i, to-tuple $ enabled?])
         clear(changed?)
         run-pass("Resolve Methods", resolve-methods{_, _, { enabled?[_] }, changed?}, "resolved-methods", false)
@@ -139,12 +141,12 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
         ;; spit(to-string("out-cf-%_.txt" % [i]), cur-package)
         run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { enabled?[_] }}, "eliminate-dead-code", false)
         ;; spit(to-string("out-ed-%_.txt" % [i]), cur-package)
-        run-pass("Update Type Annotations", update-type-annotations{_, _, { enabled?[_] }}, "update-type-annotations", false)
+        ;; run-pass("Update Type Annotations", update-type-annotations{_, _, { enabled?[_] }}, "update-type-annotations", false)
         ;; spit(to-string("out-ta-%_.txt" % [i]), cur-package)
-        ;; spit(to-string("out%_.txt" % [i]), cur-package)
-        loop(i + 1, changed?, enabled?) when not empty?(changed?)
+        spit(to-string("out%_.txt" % [i]), cur-package)
+        loop(i + 1, n - 1, changed?, enabled?) when not empty?(changed?)
   ;; ;; run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
-  run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
+  ;; run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
   ;; if optimize? :
@@ -204,6 +206,7 @@ defn ensure-unique-identifiers! (epackage:EPackage) :
 ;============================================================
 defn collapse (epackages:Tuple<EPackage>) :
   ;Create global rec ids for everything
+  println("COLLAPSE")
   val global-rec-ids = HashTable<RecId,Int>()
 
   ;Driver
@@ -1729,10 +1732,9 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
   ;Collect statistics including num-reads/writes on vars
   val walked? = IntSet()
 
-  defn analyze-body (body:EBody, iargs:Tuple<Int>) :
+  defn analyze-body (body:EBody) :
     for l in locals(body) do : all-vars[n(l)] = l
     for f in localfns(body) do : add(all-defns, n(f))
-    for arg in iargs do : (num-writes[arg] = 1, add(all-args, arg))
     defn walk (e:ELItem, writer:False|EIns) :
       match(e) :
         (e:EVar|ETagof) :
@@ -1833,7 +1835,7 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
             yield(i)
 
     val new-locals = to-tuple $ for l in locals(body) filter : unused?(n(l)) == false
-    val new-localfns = to-tuple $ for f in localfns(body) filter : unused-localfn?(n(f)) == false 
+    val new-localfns = to-tuple $ for f in localfns(body) filter : true or (unused-localfn?(n(f)) == false)
     val res = EBody(new-locals, localtypes(body), new-localfns, localobjs(body), new-ins)
 
     if false and (length(ins(body)) != length(ins(res)) or length(locals(body)) != length(locals(res))) :
@@ -1857,13 +1859,22 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
       println(res)
     res
 
-  defn analyze (e:ELItem, a:Tuple<Int>) :
+  defn collect-args (e:ELItem) :
+    match(e) :
+      (e:EFn) :
+        for arg in args(e) do : (num-writes[arg] = 1, add(all-args, arg))
+        do(collect-args, e)
+      (e:EBody) :
+        do(collect-args, localfns(e))
+      (e) :
+        do(collect-args, e)
+
+  defn analyze (e:ELItem) :
     match(e) :
       (e:EBody) :
-        ;; println("--- ANALYZING BODY")
-        analyze-body(e, a)
-        do(analyze{_, a}, localfns(e))
-      (e:EDefn|EDefmethod) :
+        analyze-body(e)
+        do(analyze, localfns(e))
+      (e:EDefn|EDefmethod|EInit) :
         clear(aliases)
         clear(unused-vars)
         clear(num-reads)
@@ -1873,18 +1884,17 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
         clear(all-vars)
         clear(all-defns)
         clear(all-args)
-        ;; println("--- ANALYZING DEFN %_ ---" % [n(e)])
-        do(analyze{_, []}, e)
-      (e:EFn) :
-        do(analyze{_, to-tuple $ cat(a, args(e))}, e)
+        collect-args(e)
+        match(e:EDefn|EDefmethod) : println("--- ANALYZING DEFN %_ ---" % [n(e)])
+        do(analyze, e)
       (e) :
-        do(analyze{_, a}, e)
+        do(analyze, e)
 
   defn walk-top (x:ELBigItem, vt:VarTable) :
     defn loop (e:ELItem) -> ELItem :
       defn exec (e:ETExp) :
         val pe = remove-unreachable-code(e)
-        analyze(pe, [])
+        analyze(pe)
         transitively-remove-unused-vars()
         ;; println("--- VARS %_" % [to-tuple $ keys(all-vars)])
         analyze-freevars(map(loop, pe), vt)
@@ -2471,13 +2481,13 @@ defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:Int -> T
   ;Update types in body
   defn update-local-types (e:EBody, vt:VarTable) -> EBody :
     val buffer = BodyBuffer(e)
-    val state = IntTable<EType>()
+    val state = IntTable<EType>(ETop())
     for e in ins(e) do :
       match(e) :
-        (e:EAnnotate) : state[n(e)] = type(e)
+        (e:EAnnotate) : state[n(e)] = EOr(type(e), state[n(e)])
         (e) : emit(buffer, e)
     val locals = to-tuple $ for l in locals(e) seq :
-      ELocal(n(l), var-type(n(l), state, vt), mutable?(l))
+      ELocal(n(l), normalize(var-type(n(l), state, vt)), mutable?(l))
     sub-locals(to-body(buffer), locals)
 
   defn infer (f:ETExp, vt:VarTable) :
@@ -2762,13 +2772,12 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|Fal
             (f:ECurry) : ECurry(EVar(n), targs(f))
         match(fid:Int) :
           val ys-types = map(type{vt, _}, ys)
-          print("RESOLVING %_%_ " % [fid, ys-types])
+          ;; print("RESOLVING %_%_ " % [fid, ys-types])
           match(resolve-target(method-table, fid, ys-types)) :
             (n:Int) :
-              match(top:Int) : (println(" -> FOUND %_" % [n]), add(changed?, top))
+              match(top:Int) : (println("RESOLVING %_%_ -> %_" % [fid, ys-types, n]), add(changed?, top))
               sub-fid(n)
             (n:False) :
-              println("")
               false 
             
       ;Resolve calls and tcalls
@@ -2974,7 +2983,7 @@ defn shrink-ifs (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, c
   defn resolve-texp (x:ETExp, vt:VarTable) :
     val result = let loop (x:ELBigItem = x, top:Int|False = false) :
       match(x) :
-        (x:EDefn|EDefmethod) : (println("DEFN %_" % [n(x)]), analyze-freevars(map(loop{_, n(x)}, x), vt) when enabled?(n(x)) else x)
+        (x:EDefn|EDefmethod) : (println("DEFN %_" % [n(x)]), analyze-freevars(map(loop{_, n(x)}, x), vt)) when enabled?(n(x)) else x
         (e:EBody) :            fold-in-body(e,top,vt)
         (e) :                  map(loop{_, top}, e)
     result as ETExp

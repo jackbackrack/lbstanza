@@ -1,3 +1,4 @@
+
 ;See License.txt for details about licensing.
 
 ;<doc>=======================================================
@@ -176,9 +177,11 @@ public defn compile (proj-manager:ProjManager,
         (opt?:True, output:False) : `optimized-pkgs
         (opt?:False, output:String) : `unoptimized-asm
         (opt?:False, output:False) : `unoptimized-pkgs
+    println("MODE %_" % [situation])
     switch(situation) :
       `optimized-asm :
         val packages = Vector<VMPackage|StdPkg>()
+        println("ABOUT TO C-AND-L")
         add(packages, combine-and-lower(/packages(result) as Tuple<EPackage|FastPkg>))
         compile-vmpackages({false}, to-tuple(packages), bindings(result), output as String, false)
       `optimized-pkgs :
@@ -224,8 +227,10 @@ public defn compile (proj-manager:ProjManager,
 
   defn combine-and-lower (packages:Tuple<EPackage|FastPkg>) :
     val epackages = for p in packages map :
+      println("C-AND-L ONE PKG")
       match(p:FastPkg) : EPackage(packageio(p), exps(p))
       else : p as EPackage
+    println("%_ EPACKAGES" % [length(epackages)])
     compile(lower-optimized(epackages))
 
   defn compile-vmpackages (save-pkg:Pkg -> ?,

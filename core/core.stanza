@@ -5821,21 +5821,21 @@ public defn Range (start:Int, end:Int|False, step:Int, inclusive?:True|False) :
    val length = match(end, inclusive?) :
       (end:Int, inc:False) :
          if step == 1 :
-           end - start
+            end - start
          else if step == -1 :
-           start - end
+            start - end
+         else if step > 0 :
+            ((end - start) + (step - 1)) / step
          else if step == 0 :
             if start == end : 0
             else : false
-         else if step > 0 :
-            ((end - start) + (step - 1)) / step
          else :
             ((end - start) + (step + 1)) / step
       (end:Int, inc:True) :
          if step == 1 :
-           end - start + 1
+            end - start + 1
          else if step == -1 :
-           start - end + 1
+            start - end + 1
          else if step == 0 :
             false
          else :
@@ -5927,6 +5927,19 @@ public defn reverse (r:Range) :
 
 ;             Looping
 ;             =======
+
+;; defmethod do (f: Int -> ?, r:Range&Lengthable) :
+;;    val s = step(r)
+;;    val e = end(r) as Int
+;;    defn end? (i:Int) :
+;;      if inclusive?(r) :
+;;        (i <= e) when s > 0 else (i >= e)
+;;      else :
+;;        (i < e)  when s > 0 else (i > e)
+;;    let loop (i:Int = start(r)) :
+;;      if end?(i) :
+;;        f(i)
+;;        loop(i + s)
 
 defmethod do (f: Int -> ?, r:Range&Lengthable) :
    val s = step(r)
