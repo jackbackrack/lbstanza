@@ -123,8 +123,6 @@ public defn analyze (func:VMFunc) -> VMFunc :
   ;Start from first instruction
   loop(0, 0)
   
-  println("B")
-
   ;Backpatch label destinations
   for entry in successors map! :
     for dest in value(entry) map :

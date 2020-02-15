@@ -123,7 +123,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
     spit("out0.txt", cur-package)
     run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
-    let loop (i:Int = 1, n:Int = 7, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
+    let loop (i:Int = 1, n:Int = 10, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
       if n > 0 :
         println("--- LOOP %_ ---%_ ENABLED?" % [i, to-tuple $ enabled?])
         clear(changed?)
@@ -206,7 +206,6 @@ defn ensure-unique-identifiers! (epackage:EPackage) :
 ;============================================================
 defn collapse (epackages:Tuple<EPackage>) :
   ;Create global rec ids for everything
-  println("COLLAPSE")
   val global-rec-ids = HashTable<RecId,Int>()
 
   ;Driver
@@ -250,6 +249,7 @@ defn collapse (epackages:Tuple<EPackage>) :
         (e:ETVar) : ETVar(new-id(n(e)))
         ;ETExps
         (e:EDefGlobal) : sub-n(e, new-id(n(e)))
+        (e:EInit) : sub-n(e, new-id(n(e)))
         (e:EDefn) : sub-n(e, new-id(n(e)))
         (e:EDefmulti) : sub-targs(sub-n(e, new-id(n(e))), new-id(targs(e)))
         (e:EDefmethod) : sub-multi(sub-n(e, new-id(n(e))), new-id(multi(e)))
@@ -959,7 +959,7 @@ public defn insert-guards (epackage:EPackage, gvt:VarTable) :
       emit(buffer, guard-localobj(o,vt))
     guard-body(body(e), buffer, vt, lostanza?(e), false, false)
     val body* = to-body(buffer, true, false, false)
-    EInit(body*, lostanza?(e))
+    EInit(n(e), body*, lostanza?(e))
 
   ;Overall driver
   defn analyze (e:ELBigItem, vt:VarTable) -> ELBigItem :
@@ -1627,7 +1627,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
                 emit(buffer, i)
           ;Return the body
           to-body(buffer, true, false, false)
-        (e:EDefmethod|EDefn) :
+        (e:EDefmethod|EDefn|EInit) :
           if enabled?(n(e)) :
             println("--- DEFN %_" % [n(e)])
             val res = map(inline{_, cons(n(e), tops)}, e)
@@ -1885,7 +1885,7 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
         clear(all-defns)
         clear(all-args)
         collect-args(e)
-        match(e:EDefn|EDefmethod) : println("--- ANALYZING DEFN %_ ---" % [n(e)])
+        println("--- ANALYZING DEFN %_ ---" % [n(e)])
         do(analyze, e)
       (e) :
         do(analyze, e)
@@ -1903,10 +1903,7 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
           ;; println("--- WALKING BODY %_" % [to-tuple $ aliases])
           val body = walk-body(e)
           sub-localfns(body, map(loop, localfns(e)) as Tuple<ELocalFn>)
-        (e:EInit) :
-          ;; println("\n--- WALKING INIT ---\n")
-          exec(e)
-        (e:EDefn|EDefmethod) :
+        (e:EDefn|EDefmethod|EInit) :
           if enabled?(n(e)) :
             println("\n--- WALKING DEFN %_---\n" % [n(e)])
             exec(e)
@@ -2497,7 +2494,7 @@ defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:Int -> T
         (e) : e
     defn process (f:ELBigItem) :
       match(f) :
-        (f:EDefn|EDefmethod) :
+        (f:EDefn|EDefmethod|EInit) :
           if enabled?(n(f)) :
             val res = map(process, f)
             println(">>> DEFN %_" % [n(f)])
@@ -3198,7 +3195,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
   defn fold-texp (x:ETExp, vt:VarTable) :
     val result = let loop (x:ELBigItem = x, top:Int|False = false, a:Tuple<Int> = []) :
       match(x) :
-        (e:EDefn|EDefmethod) :
+        (e:EDefn|EDefmethod|EInit) :
           println("DEFN %_" % [n(e)]) when enabled?(n(e))
           analyze-freevars(map(loop{_, n(e), []}, e), vt) when enabled?(n(e)) else e
         (e:EFn) :
@@ -3480,7 +3477,7 @@ defn DominatorTree (iinput:Seqable<KeyValue<Int,Tuple<Int>>>) -> Tuple<KeyValue<
   ;; println("OUTPUT = %_" % [res])
   res
 
-defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPackage :
+defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False, changed?:IntSet) -> EPackage :
   defn lookup? (values:List<KeyValue<EEqualable,EVarLocIns>>, e:EEqualable) -> False|EVarLocIns :
     let loop (elts:List<KeyValue<EEqualable,EVarLocIns>> = values) :
       if empty?(elts) :
@@ -3563,6 +3560,11 @@ defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPack
           map(loop{_, new-args}, e)
         (e:EBody) :
           fold-in-body(e, a, vt)
+        (e:EInit|EDefmethod|EDefn) :
+          if enabled?(n(e)) :
+            map(loop{_, []}, e)
+          else :
+            e
         (x) :
           match(map(loop{_, a}, x)) :
             (e:EBody) :
