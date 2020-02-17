@@ -25,7 +25,6 @@ defpackage stz/el :
 public defn lower-optimized (epackages:Tuple<EPackage>) -> EPackage :
   ;for p in epackages do :
   ;  dump(p, "logs", "precollapse")
-  println("L-O")
   lower(collapse(epackages), true)
 
 public defn lower-unoptimized (epackage:EPackage) -> EPackage :
@@ -37,7 +36,6 @@ public defn lower-unoptimized (epackage:EPackage) -> EPackage :
 
 defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;Reset id generation
-  println("LOWER")
   take-ids(epackage)
 
   ;Current processing package
@@ -111,16 +109,16 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Box Mutables", box-mutables, "boxed", false)
   run-pass("Detect Loops", detect-loops, "looped", false)
   run-pass("Simple Inline", simple-inline, "inlined", false)
-  val changed0? = IntSet()
-  val changed1? = IntSet()
-  val changed2? = IntSet()
-  run-pass("Within Package Inline", within-package-inline{_, no-inlineables, { true }, changed0?}, "wp-inlined", false)
+  run-pass("Within Package Inline", within-package-inline{_, no-inlineables, { true }, IntSet()}, "wp-inlined", false)
   if optimize? :
     run-pass("Remove Reified Types", force-remove-types, "removed-types", true)
   run-pass("Lambda Lift", lambda-lift, "lambda", true)
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
-    clear(changed0?)
+    val method-table = MethodTable(cur-package)
+    val changed0? = IntSet()
+    val changed1? = IntSet()
+    val changed2? = IntSet()
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
     spit("out0.txt", cur-package)
     run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
@@ -128,7 +126,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
       if n > 0 :
         println("--- LOOP %_ ---%_ ENABLED?" % [i, to-tuple $ enabled?])
         clear(changed?)
-        run-pass("Resolve Methods", resolve-methods{_, _, { enabled?[_] }, changed?}, "resolved-methods", false)
+        run-pass("Resolve Methods", resolve-methods{_, _, method-table, { enabled?[_] }, changed?}, "resolved-methods", false)
         println("RESOLVED METHODS IN %_" % [to-tuple $ changed?])
         run-pass("Within Package Inline", within-package-inline{_, inlineables, { enabled?[_] }, changed?}, "wp-inlined", false)
         println("INLINED METHODS IN %_" % [to-tuple $ changed?])
@@ -136,10 +134,10 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
         ;; spit(to-string("out-il-%_.txt" % [i]), cur-package)
         clear(changed2?)
         run-pass("Shrink Ifs", shrink-ifs{_, _, { enabled?[_] }, changed2?}, "shrink-ifs", false)
-        println("SHRUNK IFS IN %_" % [to-tuple $ changed?])
+        println("SHRUNK IFS IN %_" % [to-tuple $ changed2?])
         ;; spit(to-string("out-fi-%_.txt" % [i]), cur-package)
         run-pass("Constant Fold", constant-fold{_, _, _, { enabled?[_] }, changed2?}, "constant-fold", false)
-        println("CONSTANT FOLDED IN %_" % [to-tuple $ changed?])
+        println("CONSTANT FOLDED IN %_" % [to-tuple $ changed2?])
         ;; spit(to-string("out-cf-%_.txt" % [i]), cur-package)
         run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed2?[_] }}, "eliminate-dead-code", false)
         ;; spit(to-string("out-ed-%_.txt" % [i]), cur-package)
@@ -1547,12 +1545,16 @@ defn simple-inline (epackage:EPackage) :
 ;================== within-package-inline ===================
 ;============================================================
 
-defn num-reads (epackage:EPackage) -> IntTable<Int> :
+defn num-reads (epackage:EPackage, enabled?:Int -> True|False) -> IntTable<Int> :
   val num-reads = IntTable<Int>(0)
   defn walk (e:ELItem) :
     match(e) :
-      (e:EVar) : num-reads[n(e)] = num-reads[n(e)] + 1
-      (e)      : do(walk, e)
+      (e:EDefn|EDefmethod|EInit) :
+        do(walk, e) when enabled?(n(e))
+      (e:EVar) :
+        num-reads[n(e)] = num-reads[n(e)] + 1
+      (e) :
+        do(walk, e)
   do(walk, exps(epackage))
   num-reads
 
@@ -1562,7 +1564,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
   defn add-to-inline-table (l:ELocalFn|EDefn|EDefmethod) :
     inlined-functions[n(l)] = l
       
-  val num-reads = num-reads(epackage)
+  val num-reads = num-reads(epackage, enabled?)
 
   ;Determine whether a function should be inlined
   defn leaf? (body:EBody) -> True|False :
@@ -1575,7 +1577,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
         val len = length(ins(body(f)))
         empty?(localfns(body(f))) and
         empty?(localobjs(body(f))) and
-        (num-reads[n] == 1 or (len < 8 or (not top? and leaf?(body(f)) and len < 11)))
+        ((not top? and num-reads[n] == 1) or (len < 8 or (not top? and leaf?(body(f)) and len < 11)))
 
   for exp in exps(epackage) do :
     match(exp:EDefmethod|EDefn) :
@@ -1614,7 +1616,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
                   else:
                     match(get-inlined-function(fid, length(ys(i)))) :
                       (func:EFn) :
-                        println("----- INLINING %_: %_" % [fid, i])
+                        ; println("----- INLINING %_: %_" % [fid, i])
                         val [ret, tail?] = match(i) :
                           (i:ECall) : [x(i), false]
                           (i:ETCall) : [false, true]
@@ -1628,7 +1630,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
           to-body(buffer, true, false, false)
         (e:EDefmethod|EDefn|EInit) :
           if enabled?(n(e)) :
-            println("--- DEFN %_" % [n(e)])
+            ; println("--- DEFN %_" % [n(e)])
             val res = map(inline{_, cons(n(e), tops)}, e)
             ;; if changed?[n(e)] :
             ;;   println("--- RES")
@@ -1643,7 +1645,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
     inline(e, List()) as ETExp
 
   ;Inline all top-level expressions
-  println("--- INLINING")
+  ;; println("--- INLINING")
   sub-exps(epackage, map(inline-texp, exps(epackage)))  
 
 ;============================================================
@@ -1651,32 +1653,33 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
 ;============================================================
 
 defn remove-unreachable-code (body:EBody) -> EBody :
-  val num-gotos = IntTable<Int>(0)
   val labels = IntTable<Int>()
   for (i in ins(body), j in 0 to false) do :
     match(i:ELabel): labels[n(i)] = j
-  defn walk (e:ELItem) :
-    match(e) :
-      (e:EIf) :
-        num-gotos[n1(e)] = num-gotos[n1(e)] + 1
-        num-gotos[n2(e)] = num-gotos[n2(e)] + 1
-        do(walk, ys(e))
-      (e:ETypeof) :
-        num-gotos[n1(e)] = num-gotos[n1(e)] + 1
-        num-gotos[n2(e)] = num-gotos[n2(e)] + 1
-        walk(y(e))
-      (e:EBranch|EGoto) :
-        num-gotos[n(e)] = num-gotos[n(e)] + 1
-      (e) :
-        do(walk, e)
-
+  val num-gotos = IntTable<Int>(0)
   val walked? = IntSet()
+  ;; defn walk (e:ELItem) :
+  ;;   match(e) :
+  ;;     (e:EIf) :
+  ;;       num-gotos[n1(e)] = num-gotos[n1(e)] + 1
+  ;;       num-gotos[n2(e)] = num-gotos[n2(e)] + 1
+  ;;     (e:ETypeof) :
+  ;;       num-gotos[n1(e)] = num-gotos[n1(e)] + 1
+  ;;       num-gotos[n2(e)] = num-gotos[n2(e)] + 1
+  ;;     (e:EBranch|EGoto) :
+  ;;       num-gotos[n(e)] = num-gotos[n(e)] + 1
+  ;;     (e) :
+  ;;       do(walk, e)
+
+  ;; val num-gotos2 = IntTable<Int>(0)
   let loop (pc:Int = 0) :
-    defn goto (n:Int) : (loop(labels[n])) ; println("GOTO %_" % [n])
+    defn goto (n:Int) :
+      num-gotos[n] = num-gotos[n] + 1
+      loop(labels[n])
     if not walked?[pc] and pc < length(ins(body)) :
       add(walked?, pc)
       val ins = ins(body)[pc]
-      walk(ins)
+      ;; walk(ins)
       match(ins) :
         (e:EIf|ETypeof) :          (goto(n1(e)), goto(n2(e)))
         (e:EReturn|EEnd|ETCall) :  false
@@ -1684,7 +1687,17 @@ defn remove-unreachable-code (body:EBody) -> EBody :
         (e:EGoto) :                goto(n(e))
         (e:EIns) :                 loop(pc + 1)
 
+  ;; if length(num-gotos) != length(num-gotos2) :
+  ;;   println("LEN NUM-GOTOS %_ != LEN NUM-GOTOS2 %_" % [length(num-gotos), length(num-gotos2)])
+  ;; for n in keys(num-gotos) do :
+  ;;   if not key?(num-gotos2, n) :
+  ;;     println("NOT FOUND KEY %_ IN GOTOS2" % [n])
+  ;;   else if num-gotos[n] != num-gotos2[n] :
+  ;;     println("DISAGREED ON GOTOS %_ -> %_ VS %_" % [n, num-gotos[n], num-gotos2[n]])
+
+  ;Remove all dead instructions.
   val new-ins = to-tuple $ for (i in ins(body), j in 0 to false) filter : walked?[j]
+  ;Remove goto/label when label immediately follows goto and only one label target.
   val peep-ins = generate<EIns> :
     let walk (j:Int = 0) :
       if j < length(new-ins) :
@@ -1789,7 +1802,7 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
   defn walk-body (body:EBody) -> EBody :
     ;Rename all vars through single write defs.
     defn renameable? (n:Int) -> True|False :
-      (key?(all-vars, n) and not mutable?(all-vars[n])) or all-defns[n] or all-args[n]
+      (key?(all-vars, n) and not (mutable?(all-vars[n]) or num-writes[n] > 1)) or all-defns[n] or all-args[n]
     defn rename (e:EIns) -> EIns :
       defn* walk (e:ELItem) :
         match(e) :
@@ -1891,12 +1904,6 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
 
   defn walk-top (x:ELBigItem, vt:VarTable) :
     defn loop (e:ELItem) -> ELItem :
-      defn exec (e:ETExp) :
-        val pe = remove-unreachable-code(e)
-        analyze(pe)
-        transitively-remove-unused-vars()
-        ;; println("--- VARS %_" % [to-tuple $ keys(all-vars)])
-        analyze-freevars(map(loop, pe), vt)
       match(e) :
         (e:EBody) :
           ;; println("--- WALKING BODY %_" % [to-tuple $ aliases])
@@ -1905,7 +1912,11 @@ defn eliminate-dead-code (p:EPackage, gvt:VarTable, enabled?:Int -> True|False) 
         (e:EDefn|EDefmethod|EInit) :
           if enabled?(n(e)) :
             ;; println("\n--- WALKING DEFN %_---\n" % [n(e)])
-            exec(e)
+            val pe = remove-unreachable-code(e)
+            analyze(pe)
+            transitively-remove-unused-vars()
+            ;; println("--- VARS %_" % [to-tuple $ keys(all-vars)])
+            analyze-freevars(map(loop, pe), vt)
           else :
             e
         (e) :
@@ -2752,8 +2763,7 @@ defn MethodTable (epackage:EPackage) :
   ;Launch
   driver()
 
-defn resolve-methods (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
-  val method-table = MethodTable(epackage)
+defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
   defn resolve-in-body (e:EBody, vt:VarTable, top:False|Int) -> EBody :
     val ins* = for i in ins(e) map :
       ;Resolve target of call
@@ -2771,7 +2781,7 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|Fal
           ;; print("RESOLVING %_%_ " % [fid, ys-types])
           match(resolve-target(method-table, fid, ys-types)) :
             (n:Int) :
-              match(top:Int) : (println("RESOLVING %_%_ -> %_" % [fid, ys-types, n]), add(changed?, top))
+              match(top:Int) : (add(changed?, top)) ;println("RESOLVING %_%_ -> %_" % [fid, ys-types, n])
               sub-fid(n)
             (n:False) :
               false 
@@ -2789,14 +2799,14 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|Fal
       match(x) :
         (e:EDefmethod|EDefn) :
           if enabled?(n(e)) :
-            println("--- DEFN %_" % [n(e)])
+            ; println("--- DEFN %_" % [n(e)])
             map(loop{_, n(e)}, e)
           else:
             e
         (e:EBody) :            resolve-in-body(e,vt,top)
         (e) :                  map(loop{_, top}, e)
     result as ETExp
-  println("=== RESOLVING-METHODS")
+  ;println("=== RESOLVING-METHODS")
   map-with-var-table(resolve-texp, gvt, epackage)
 
 defstruct MethodDag :
@@ -2954,7 +2964,7 @@ defn shrink-ifs (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, c
       match(match-if-match(inz, vt)) :
         (ir:One<InsRewrite>) :
           add(rewrites, value(ir))
-          println("--- FOUND IF %_" % [value(ir)])
+          println("--- FOUND IF %_" % [value(ir)]) when trace-constant-folding?
         (none) : false
       if not empty?(inz) :
         val [now-idx, now-ins] = peek(inz)
@@ -2979,7 +2989,7 @@ defn shrink-ifs (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, c
   defn resolve-texp (x:ETExp, vt:VarTable) :
     val result = let loop (x:ELBigItem = x, top:Int|False = false) :
       match(x) :
-        (x:EDefn|EDefmethod) : (println("DEFN %_" % [n(x)]), analyze-freevars(map(loop{_, n(x)}, x), vt)) when enabled?(n(x)) else x
+        (x:EDefn|EDefmethod) : (analyze-freevars(map(loop{_, n(x)}, x), vt)) when enabled?(n(x)) else x ;println("DEFN %_" % [n(x)])
         (e:EBody) :            fold-in-body(e,top,vt)
         (e) :                  map(loop{_, top}, e)
     result as ETExp
@@ -3010,6 +3020,8 @@ defn walk-writes (e:EBody, args:Tuple<Int>) -> IntTable<Int> :
 
 defn disjoint? (ehier:EHier, t1:EType, t2:EType) -> True|False :
   not (subtype?(ehier, t1, t2) or subtype?(ehier, t2, t1))
+
+val trace-constant-folding? = false
 
 defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
   defn fold-in-body (e:EBody, top:False|Int, args:Tuple<Int>, vt:VarTable) -> EBody :
@@ -3074,7 +3086,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
         (i:EPrim) :
           defn result (value) :
             val lit = ELiteral(value)
-            println("FOLDING %_ -> %_" % [i, lit])
+            println("FOLDING %_ -> %_" % [i, lit]) when trace-constant-folding?
             bindings[n(x(i))] = lit
             maybe-changed(top)
             EDef(x(i), lit)
@@ -3107,7 +3119,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
         (i:EIf) :
           ;; println("CONSIDERING %_ -> %_" % [i, map(constant?, ys(i))])
           defn result (res:True|False) :
-            println("FOLDING %_ -> %_" % [i, res])
+            println("FOLDING %_ -> %_" % [i, res]) when trace-constant-folding?
             maybe-changed(top)
             EGoto(n1(i) when res else n2(i))
           if all?(constant?, ys(i)) :
@@ -3136,11 +3148,11 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
             for b in branches(i) do :
               ;; println("--- SUBTYPE? %_ DISJOINT? %_" % [to-tuple $ seq(subtype?{ehier, _, _}, ys-types, types(b)), to-tuple $ seq(disjoint?{ehier, _, _}, ys-types, types(b))])
               if all?(subtype?{ehier, _, _}, ys-types, types(b)) :
-                println("---- FOLDING %_: %_ -> %_" % [i, ys-types, b])
+                println("---- FOLDING %_: %_ -> %_" % [i, ys-types, b]) when trace-constant-folding?
                 maybe-changed(top)
                 return(EGoto(n(b)))
               else if not any?(disjoint?{ehier, _, _}, ys-types, types(b)) :
-                println("---- ABORTING %_" % [b])
+                ;println("---- ABORTING %_" % [b])
                 return(i)
             i
         (e:EObjectGet) :
@@ -3151,7 +3163,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
                   match(value(l)) :
                     (o:ENewObject) :
                       maybe-changed(top)
-                      println("---- FOLDING %_ / %_[%_]" % [e, o, index(e)])
+                      println("---- FOLDING %_ / %_[%_]" % [e, o, index(e)]) when trace-constant-folding?
                       walk(EDef(x(e), ys(o)[index(e)]))
                     (f:False) : default()
                 (f) : default()
@@ -3195,7 +3207,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
     val result = let loop (x:ELBigItem = x, top:Int|False = false, a:Tuple<Int> = []) :
       match(x) :
         (e:EDefn|EDefmethod|EInit) :
-          println("DEFN %_" % [n(e)]) when enabled?(n(e))
+          ; println("DEFN %_" % [n(e)]) when enabled?(n(e))
           analyze-freevars(map(loop{_, n(e), []}, e), vt) when enabled?(n(e)) else e
         (e:EFn) :
           val new-args = to-tuple $ cat(a, args(e))
