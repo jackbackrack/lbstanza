@@ -120,7 +120,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     val changed1? = IntSet()
     val changed2? = IntSet()
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
-    spit("out0.txt", cur-package)
+    ;spit("out0.txt", cur-package)
     run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
     let loop (i:Int = 1, n:Int = 10, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
       if n > 0 :
@@ -155,7 +155,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;;   run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
   ;;   spit("out3.txt", cur-package)
 
-  spit("out.txt", cur-package)
+  ;spit("out.txt", cur-package)
 
   ;Return processed package
   cur-package
