@@ -125,7 +125,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     let loop (i:Int = 1, n:Int = 10, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
       if n > 0 :
         within time-ms!(string-join $ ["LOOP" i]) :
-          println("--- LOOP %_ --- %_ ENABLED?" % [i, length(enabled?)])
+          println("--- LOOP %_ --- %_ ENABLED?" % [i, to-tuple $ enabled?])
           clear(changed?)
           run-pass("Resolve Methods", resolve-methods{_, _, method-table, { enabled?[_] }, changed?}, "resolved-methods", false)
           ;println("RESOLVED METHODS IN %_" % [to-tuple $ changed?])
@@ -155,7 +155,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;;   run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
   ;;   spit("out3.txt", cur-package)
 
-  ;spit("out.txt", cur-package)
+  spit("out.txt", cur-package)
 
   ;Return processed package
   cur-package
@@ -1578,7 +1578,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
         val len = length(ins(body(f)))
         empty?(localfns(body(f))) and
         empty?(localobjs(body(f))) and
-        ((not top? and num-reads[n] == 1) or (len < 8 or (not top? and leaf?(body(f)) and len < 11)))
+        ((not top? and num-reads[n] == 1) or (len < 8 or (leaf?(body(f)) and len < 11)))
 
   for exp in exps(epackage) do :
     match(exp:EDefmethod|EDefn) :
@@ -1718,6 +1718,12 @@ defn pure? (ins:EIns) :
     (ins:EDef|ELoad|EPtr|ENew|ETuple|EVoidTuple|ETupleGet|EObject|EStruct|ENewObject|EObjectGet|EClosureGet|EBox|EBoxGet|EInterpret|EConv) : true
     (ins) : false
 
+defn inc (t:IntTable<Int>, k:Int) -> Int :
+  update(t, { _ + 1 }, k)
+
+defn cons!<?T> (t:IntTable<List<?T>>, k:Int, e:?T) -> List<T> :
+  update(t, { cons(e, _) }, k)
+
 defn eliminate-dead-code (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False) -> EPackage :
   val unused-vars = IntSet()
   val num-reads = IntTable<Int>(0)
@@ -1729,22 +1735,23 @@ defn eliminate-dead-code (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|
 
   ;Collect statistics including num-reads/writes on vars
   defn analyze-body (body:EBody, vt:VarTable) :
-    for l in locals(body) do : add(mut?, n(l)) when mutable?(l)
+    for l in locals(body) do : num-reads[n(l)] = 0
     defn walk (e:ELItem, writer:False|EIns) :
       match(e) :
         (e:EVar) :
-          if not global?(vt, n(e)) : update(num-reads, { _ + 1 }, n(e))
+          if not global?(vt, n(e)) : inc(num-reads, n(e))
         (e:EVarLoc) :
           if not global?(vt, n(e)) :
             match(writer) :
               (writer:EInitClosures) :
-                update(num-reads, { _ + 1 }, n(e))
+                inc(num-reads, n(e))
               (writer:EIns) :
                 add(var-side-effecting?, n(e)) when not pure?(writer)
-                update(num-writes, fn (m) : (add(mut?, n(e)) when m == 1, m + 1), n(e))
-                update(writers, { cons(writer, _) }, n(e))
+                val nw = inc(num-writes, n(e))
+                add(mut?, n(e)) when nw > 1
+                cons!(writers, n(e), writer)
               (writer) :
-                update(num-reads, { _ + 1 }, n(e))
+                inc(num-reads, n(e))
         (e:ELive) :
           false
         (e:EPtr|ELoad) :
@@ -1755,10 +1762,11 @@ defn eliminate-dead-code (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|
         (e) :
           do(walk{_, false}, e)
 
-    for ins in body do : walk(ins, false)
+    for ins in ins(body) do : walk(ins, false)
 
   defn transitively-remove-unused-vars () :
-    for kv in num-reads do : add(unused-vars, key(kv)) when value(kv) == 0
+    for kv in num-reads do :
+      add(unused-vars, key(kv)) when value(kv) == 0
     val work = Queue<Int>()
     for v in unused-vars do : add(work, v)
     defn dec-num-reads (e:ELItem, lhs?:True|False) :
@@ -1829,11 +1837,12 @@ defn eliminate-dead-code (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|
           add(new-ins, i)
 
     val new-locals = to-tuple $ for l in locals(body) filter : unused?(n(l)) == false
-    val new-localfns = to-tuple $ for f in localfns(body) filter : true or (unused-localfn?(n(f)) == false)
+    val new-localfns = to-tuple $ for f in localfns(body) filter : (unused-localfn?(n(f)) == false)
     val res = EBody(new-locals, localtypes(body), new-localfns, localobjs(body), to-tuple $ new-ins)
 
     if false and (length(ins(body)) != length(ins(res)) or length(locals(body)) != length(locals(res))) :
       println("\n--- STATS --->\n")
+      println("MUT: %_" % [to-tuple $ mut?])
       println("NUM-READS: %_" % [to-tuple $ num-reads])
       println("NUM-WRITES: %_" % [to-tuple $ num-writes])
       println("UNUSED-VARS: %_" % [to-tuple $ unused-vars])
@@ -1869,6 +1878,7 @@ defn eliminate-dead-code (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|
           analyze-body(e, vt)
           do(analyze, localfns(e))
         (e:EDefn|EDefmethod|EInit) :
+          clear(mut?)
           clear(aliases)
           clear(unused-vars)
           clear(num-reads)
