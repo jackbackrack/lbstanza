@@ -25,6 +25,7 @@ defpackage stz/el :
 public defn lower-optimized (epackages:Tuple<EPackage>) -> EPackage :
   ;for p in epackages do :
   ;  dump(p, "logs", "precollapse")
+  println("LOWER OPTIMIZE") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
   lower(collapse(epackages), true)
 
 public defn lower-unoptimized (epackage:EPackage) -> EPackage :
@@ -35,6 +36,7 @@ public defn lower-unoptimized (epackage:EPackage) -> EPackage :
 ;============================================================
 
 defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
+  println("STARTING LOWERING") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
   ;Reset id generation
   take-ids(epackage)
 
@@ -51,6 +53,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     ehier = EHier(packageio(epackage), iotable)
   update-tables()
   
+  println("BUILT TABLES") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
   ;Run pass
   defn run-pass (pass-name:String, f:EPackage -> EPackage, suffix:String, update-tables?:True|False) :
     within time-ms!(pass-name) :
@@ -120,7 +123,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     val changed1? = IntSet()
     val changed2? = IntSet()
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
-    ;spit("out0.txt", cur-package)
+    spit("out0.txt", cur-package)
     run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
     let loop (i:Int = 1, n:Int = 4, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
       if n > 0 :
@@ -155,7 +158,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;;   run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
   ;;   spit("out3.txt", cur-package)
 
-  ;spit("out.txt", cur-package)
+  spit("out.txt", cur-package)
 
   ;Return processed package
   cur-package
@@ -203,6 +206,7 @@ defn ensure-unique-identifiers! (epackage:EPackage) :
 ;===================== Collapsing ===========================
 ;============================================================
 defn collapse (epackages:Tuple<EPackage>) :
+  println("COLLAPSING") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
   ;Create global rec ids for everything
   val global-rec-ids = HashTable<RecId,Int>()
 
@@ -295,7 +299,9 @@ defn collapse (epackages:Tuple<EPackage>) :
     seq({rename(_) as ETExp}, exps(epackage))
 
   ;Launch
-  driver()
+  val res = driver()
+  println("COLLAPSE DONEE") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
+  res
 
 ;============================================================
 ;====================== Unique IDs ==========================
@@ -1896,20 +1902,17 @@ defn eliminate-dead-code (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|
           val body = rename-body(e, vt)
           sub-localfns(body, map(loop, localfns(e)) as Tuple<ELocalFn>)
         (e:EDefn|EDefmethod|EInit) :
-          if enabled?(n(e)) :
-            ; println("\n--- WALKING DEFN %_---\n" % [n(e)])
-            val pe = remove-unreachable-code(e)
-            analyze(pe)
-            transitively-remove-unused-vars()
-            analyze-freevars(map(loop, pe), vt)
-          else :
-            e
+          ; println("\n--- WALKING DEFN %_---\n" % [n(e)])
+          val pe = remove-unreachable-code(e)
+          analyze(pe)
+          transitively-remove-unused-vars()
+          analyze-freevars(map(loop, pe), vt)
         (e) :
           map(loop, e)
 
     loop(x) as ETExp
 
-  within (texp, vt) = map-with-var-table(gvt, epackage) :
+  within (texp, vt) = map-with-var-table(gvt, epackage, enabled?) :
     walk-top(texp, vt)
 
 
@@ -2489,18 +2492,15 @@ defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:Int -> T
     defn process (f:ELBigItem) :
       match(f) :
         (f:EDefn|EDefmethod|EInit) :
-          if enabled?(n(f)) :
-            val res = map(process, f)
-            println(">>> DEFN %_" % [n(f)])
-            res
-          else :
-            f
+          val res = analyze-freevars(map(process, f), vt)
+          println(">>> DEFN %_" % [n(f)])
+          res
         (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
         (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
         (f) : map(process, f)
-    process(analyze-freevars(f, vt)) as ETExp
+    process(f) as ETExp
 
-  map-with-var-table(infer, gvt, epackage)
+  map-with-var-table(infer, gvt, epackage, enabled?)
 
 ;============================================================
 ;==================== Check Elision =========================
@@ -2781,17 +2781,16 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable,
   defn resolve-texp (x:ETExp, vt:VarTable) :
     val result = let loop (x:ELBigItem = x, top:False|Int = false) :
       match(x) :
-        (e:EDefmethod|EDefn) :
-          if enabled?(n(e)) :
-            ; println("--- DEFN %_" % [n(e)])
-            map(loop{_, n(e)}, e)
-          else:
-            e
-        (e:EBody) :            resolve-in-body(e,vt,top)
-        (e) :                  map(loop{_, top}, e)
+        (e:EDefmethod|EDefn|EInit) :
+          ; println("--- DEFN %_" % [n(e)])
+          map(loop{_, n(e)}, e)
+        (e:EBody) :
+          resolve-in-body(e,vt,top)
+        (e) :
+          map(loop{_, top}, e)
     result as ETExp
   ;println("=== RESOLVING-METHODS")
-  map-with-var-table(resolve-texp, gvt, epackage)
+  map-with-var-table(resolve-texp, gvt, epackage, enabled?)
 
 defstruct MethodDag :
   dag: Dag
@@ -2973,11 +2972,14 @@ defn shrink-ifs (epackage:EPackage, gvt:VarTable, enabled?: Int -> True|False, c
   defn resolve-texp (x:ETExp, vt:VarTable) :
     val result = let loop (x:ELBigItem = x, top:Int|False = false) :
       match(x) :
-        (x:EDefn|EDefmethod) : (analyze-freevars(map(loop{_, n(x)}, x), vt)) when enabled?(n(x)) else x ;println("DEFN %_" % [n(x)])
-        (e:EBody) :            fold-in-body(e,top,vt)
-        (e) :                  map(loop{_, top}, e)
+        (x:EDefn|EDefmethod|EInit) :
+          analyze-freevars(map(loop{_, n(x)}, x), vt) ;println("DEFN %_" % [n(x)])
+        (e:EBody) :
+          fold-in-body(e,top,vt)
+        (e) :
+          map(loop{_, top}, e)
     result as ETExp
-  map-with-var-table(resolve-texp, gvt, epackage)
+  map-with-var-table(resolve-texp, gvt, epackage, enabled?)
 
 ;============================================================
 ;==================== CONSTANT FOLD =========================
@@ -3191,8 +3193,8 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
     val result = let loop (x:ELBigItem = x, top:Int|False = false, a:Tuple<Int> = []) :
       match(x) :
         (e:EDefn|EDefmethod|EInit) :
-          ; println("DEFN %_" % [n(e)]) when enabled?(n(e))
-          analyze-freevars(map(loop{_, n(e), []}, e), vt) when enabled?(n(e)) else e
+          ; println("DEFN %_" % [n(e)]) 
+          analyze-freevars(map(loop{_, n(e), []}, e), vt)
         (e:EFn) :
           val new-args = to-tuple $ cat(a, args(e))
           map(loop{_, top, new-args}, e)
@@ -3202,7 +3204,7 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
           map(loop{_, top, a}, x)
     result as ETExp
 
-  map-with-var-table(fold-texp, gvt, epackage)
+  map-with-var-table(fold-texp, gvt, epackage, enabled?)
 
 ;============================================================
 ;=========== COMMON SUBEXPRESSION ELIMINATION ===============
@@ -4144,6 +4146,13 @@ defn join-free (fs:Seqable<Free>) :
 defn map-with-var-table (f:(ETExp, VarTable) -> ETExp, gvt:VarTable, epackage:EPackage) :
   val exps* = for e in exps(epackage) map :
     f(e, LocalVarTable(gvt, e))
+  sub-exps(epackage, exps*)
+
+defn map-with-var-table (f:(ETExp, VarTable) -> ETExp, gvt:VarTable, epackage:EPackage, enabled?:Int -> True|False) :
+  val exps* = for e in exps(epackage) map :
+    match(e:EInit|EDefn|EDefmethod) :
+      f(e, LocalVarTable(gvt, e)) when enabled?(n(e)) else e
+    else : e
   sub-exps(epackage, exps*)
 
 ;Rename all variables and type variables
