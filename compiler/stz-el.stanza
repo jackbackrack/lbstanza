@@ -25,7 +25,6 @@ defpackage stz/el :
 public defn lower-optimized (epackages:Tuple<EPackage>) -> EPackage :
   ;for p in epackages do :
   ;  dump(p, "logs", "precollapse")
-  println("LOWER OPTIMIZE") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
   lower(collapse(epackages), true)
 
 public defn lower-unoptimized (epackage:EPackage) -> EPackage :
@@ -36,7 +35,6 @@ public defn lower-unoptimized (epackage:EPackage) -> EPackage :
 ;============================================================
 
 defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
-  println("STARTING LOWERING") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
   ;Reset id generation
   take-ids(epackage)
 
@@ -53,7 +51,6 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     ehier = EHier(packageio(epackage), iotable)
   update-tables()
   
-  println("BUILT TABLES") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
   ;Run pass
   defn run-pass (pass-name:String, f:EPackage -> EPackage, suffix:String, update-tables?:True|False) :
     within time-ms!(pass-name) :
@@ -123,9 +120,9 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     val changed1? = IntSet()
     val changed2? = IntSet()
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
-    spit("out0.txt", cur-package)
+    ;spit("out0.txt", cur-package)
     run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
-    let loop (i:Int = 1, n:Int = 4, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
+    let loop (i:Int = 1, n:Int = 7, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
       if n > 0 :
         within time-ms!(string-join $ ["LOOP" i]) :
           println("--- LOOP %_ --- %_ ENABLED?" % [i, to-tuple $ enabled?])
@@ -147,7 +144,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           ;; spit(to-string("out-ed-%_.txt" % [i]), cur-package)
           ;; run-pass("Update Type Annotations", update-type-annotations{_, _, { enabled?[_] }}, "update-type-annotations", false)
           ;; spit(to-string("out-ta-%_.txt" % [i]), cur-package)
-          ;; spit(to-string("out%_.txt" % [i]), cur-package)
+          ;spit(to-string("out%_.txt" % [i]), cur-package)
           add-all(changed?, changed2?)
         loop(i + 1, n - 1, changed?, enabled?) when not empty?(changed?)
   ;; ;; run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
@@ -158,7 +155,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;;   run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
   ;;   spit("out3.txt", cur-package)
 
-  spit("out.txt", cur-package)
+  ;if optimize? : spit("out.txt", cur-package)
 
   ;Return processed package
   cur-package
@@ -206,7 +203,6 @@ defn ensure-unique-identifiers! (epackage:EPackage) :
 ;===================== Collapsing ===========================
 ;============================================================
 defn collapse (epackages:Tuple<EPackage>) :
-  println("COLLAPSING") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
   ;Create global rec ids for everything
   val global-rec-ids = HashTable<RecId,Int>()
 
@@ -299,9 +295,7 @@ defn collapse (epackages:Tuple<EPackage>) :
     seq({rename(_) as ETExp}, exps(epackage))
 
   ;Launch
-  val res = driver()
-  println("COLLAPSE DONEE") flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
-  res
+  driver()
 
 ;============================================================
 ;====================== Unique IDs ==========================
@@ -1559,7 +1553,7 @@ defn num-reads (epackage:EPackage, enabled?:Int -> True|False) -> IntTable<Int> 
       (e:EDefn|EDefmethod|EInit) :
         do(walk, e) when enabled?(n(e))
       (e:EVar) :
-        num-reads[n(e)] = num-reads[n(e)] + 1
+        inc(num-reads, n(e))
       (e) :
         do(walk, e)
   do(walk, exps(epackage))
@@ -1582,9 +1576,11 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
         all?(inline?{n, _, top?}, funcs(f))
       (f:EFn) :
         val len = length(ins(body(f)))
-        empty?(localfns(body(f))) and
-        empty?(localobjs(body(f))) and
-        ((not top? and num-reads[n] == 1) or (len < 8 or (leaf?(body(f)) and len < 11)))
+        val i? = empty?(localfns(body(f))) and
+          empty?(localobjs(body(f))) and
+          ((not top? and num-reads[n] == 1) or (len < 8 or (leaf?(body(f)) and len < 11)))
+        ;println("INLINE? %_ LEN %_ L? %_ TOP? %_ NUM-READS %_ -> %_" % [n, len, l?, top?, num-reads[n], i?])
+        i?
 
   for exp in exps(epackage) do :
     match(exp:EDefmethod|EDefn) :
@@ -1623,7 +1619,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
                   else:
                     match(get-inlined-function(fid, length(ys(i)))) :
                       (func:EFn) :
-                        ; println("----- INLINING %_: %_" % [fid, i])
+                        ;println("----- INLINING %_: %_" % [fid, i])
                         val [ret, tail?] = match(i) :
                           (i:ECall) : [x(i), false]
                           (i:ETCall) : [false, true]
@@ -1637,7 +1633,7 @@ defn within-package-inline (epackage:EPackage, inlineables:IntSet, enabled?:Int 
           to-body(buffer, true, false, false)
         (e:EDefmethod|EDefn|EInit) :
           if enabled?(n(e)) :
-            ; println("--- DEFN %_" % [n(e)])
+            ;println("--- DEFN %_" % [n(e)])
             val res = map(inline{_, cons(n(e), tops)}, e)
             ;; if changed?[n(e)] :
             ;;   println("--- RES")

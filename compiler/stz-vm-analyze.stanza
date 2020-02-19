@@ -11,7 +11,7 @@ defpackage stz/vm-analyze :
 
 public defn analyze (vmp:VMPackage) :
   val funcs* = for f in funcs(vmp) map :
-    println("--- ID = %_ ---" % [id(f)])
+    ;println("--- ID = %_ ---" % [id(f)])
     val func* = match(func(f)) :
       (func:VMMultifn) :
         val funcs* = for f in funcs(func) map :
@@ -19,9 +19,8 @@ public defn analyze (vmp:VMPackage) :
         val default* = analyze(default(func))
         VMMultifn(arg(func), funcs*, default*)
       (func:VMFunc) :
-        println("--- FN ---")
-        println(func)
-        flush(STANDARD-OUTPUT-STREAM  as FileOutputStream)
+        ;println("--- FN ---")
+        ;println(func)
         analyze(func)
     sub-func(f, func*)
   sub-funcs(vmp, funcs*)
