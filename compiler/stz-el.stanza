@@ -1864,18 +1864,11 @@ defn eliminate-dead-code (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|
 
 
   defn walk-top (x:ELBigItem, vt:VarTable) :
-    defn collect-args (e:ELItem) :
+    defn analyze (e:ELItem) :
       match(e) :
         (e:EFn) :
           for arg in args(e) do : num-writes[arg] = 1
-          do(collect-args, e)
-        (e:EBody) :
-          do(collect-args, localfns(e))
-        (e) :
-          do(collect-args, e)
-
-    defn analyze (e:ELItem) :
-      match(e) :
+          do(analyze, e)
         (e:EBody) :
           analyze-body(e, vt)
           do(analyze, localfns(e))
@@ -1887,7 +1880,6 @@ defn eliminate-dead-code (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|
           clear(num-writes)
           clear(writers)
           clear(var-side-effecting?)
-          collect-args(e)
           do(analyze, e)
         (e) :
           do(analyze, e)
