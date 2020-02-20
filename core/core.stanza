@@ -1032,6 +1032,8 @@ lostanza defn untag (x:long) -> ptr<?> :
   if tagbits != 1 : fatal("Not a heap-allocated object!")
   return (x - 1 + 8) as ptr<?>
 
+lostanza var total-gc-time:long = 0L
+lostanza var total-allocated:long = 0L
 lostanza var TRACKER-CHAIN:ptr<LivenessTrackerObj>
 lostanza defn collect-garbage (vms:ptr<VMState>) -> long :
   ;Print diagnostics
@@ -1039,6 +1041,9 @@ lostanza defn collect-garbage (vms:ptr<VMState>) -> long :
   ;dump-heap(vms)
   ;call-c clib/printf("collect garbage\n")
 
+  val num-allocated = vms.heap-top - vms.heap
+  total-allocated = total-allocated + num-allocated
+  
   ;Swap free with heap
   val heap = vms.heap
   val heap-limit = vms.heap-limit
@@ -1064,6 +1069,7 @@ lostanza defn collect-garbage (vms:ptr<VMState>) -> long :
 
   ;Scan const roots
   ;call-c clib/printf("scan consts\n")
+  val start-time = call-c clib/current_time_ms()
   val consts = vms.const-table
   val nconsts = [vms.const-mem as ptr<int>]
   for (var i:int = 0, i < nconsts, i = i + 1) :
@@ -1082,8 +1088,13 @@ lostanza defn collect-garbage (vms:ptr<VMState>) -> long :
   ;call-c clib/printf("scan tracker chain\n")
   scan-tracker-chain(TRACKER-CHAIN)
 
+  val end-time = call-c clib/current_time_ms()
+  val duration = end-time - start-time
+  total-gc-time = total-gc-time + duration
+  
   ;Print diagnostics
-  ;call-c clib/printf("After collect Garbage:\n")
+  ; call-c clib/printf("After collect Garbage")
+  ; call-c clib/printf("Heap %ld: %ld allocd %ld tot allocd %ld msecs %ld tot msecs\n", vms.heap-top - vms.heap, num-allocated, total-allocated, duration, total-gc-time)
   ;dump-heap(vms)
 
   ;Return
