@@ -115,7 +115,9 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lambda Lift", lambda-lift, "lambda", true)
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
-    val method-table = MethodTable(cur-package)
+    val class-tree = make-class-tree(cur-package)
+    val sf = SetFlattener()
+    val method-table = MethodTable(cur-package, sf, class-tree)
     val changed0? = IntSet()
     val changed1? = IntSet()
     val changed2? = IntSet()
@@ -137,7 +139,9 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           run-pass("Shrink Ifs", shrink-ifs{_, _, { enabled?[_] }, changed2?}, "shrink-ifs", false)
           ;println("SHRUNK IFS IN %_" % [to-tuple $ changed2?])
           ;; spit(to-string("out-fi-%_.txt" % [i]), cur-package)
-          run-pass("Constant Fold", constant-fold{_, _, _, { enabled?[_] }, changed2?}, "constant-fold", false)
+          ;run-pass("Resolve Matches", resolve-matches{_, _, _, class-tree, { enabled?[_] }, changed?}, "resolved-matches", false)
+          ;spit(to-string("out-rm-%_.txt" % [i]), cur-package)
+          run-pass("Constant Fold", constant-fold{_, _, _, sf, class-tree, { enabled?[_] }, changed2?}, "constant-fold", false)
           ;println("CONSTANT FOLDED IN %_" % [to-tuple $ changed2?])
           ;; spit(to-string("out-cf-%_.txt" % [i]), cur-package)
           run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed2?[_] }}, "eliminate-dead-code", false)
@@ -148,7 +152,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           add-all(changed?, changed2?)
         loop(i + 1, n - 1, changed?, enabled?) when not empty?(changed?)
   ;; ;; run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
-  run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
+  run-pass("Resolve Matches Covereage", resolve-matches-coverage, "resolved-matches-coverage", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
   ;; if optimize? :
@@ -2657,37 +2661,34 @@ defn lift-objects (epackage:EPackage, gvt:VarTable) -> EPackage :
 ;=============== Building the Method Table ==================
 ;============================================================
 
+;Create a class tree
+defn make-class-tree (epackage:EPackage) -> DynTree :
+  ;Retrieve all ids in type
+  defn parent-ids (t:EType|False) :
+    let loop (t:EType|False = t) :
+      match(t) :
+        (t:EAnd) : cat(loop(a(t)), loop(b(t)))
+        (t:EOf) : [n(t)]
+        (t:False) : []
+
+  ;Create class tree
+  DynTree $ for e in exps(epackage) seq? :
+      match(e) :
+        (e:EDefType) : One(NodeState(n(e), to-tuple(parent-ids(parent(e))), children(e), false))
+        (e:EDefStruct) : One(NodeState(n(e), to-tuple(parent-ids(parent(e))), [], true))
+        (e:EDefObject): One(NodeState(n(e), to-tuple(parent-ids(parent(e))), [], true))
+        (e) : None()
+
 deftype MethodTable
 defmulti resolve-target (t:MethodTable, multi:Int, args:Tuple<EType>) -> Int|False
 
-defn MethodTable (epackage:EPackage) :
-  ;Caches
-  val sf = SetFlattener()
-  
+defn MethodTable (epackage:EPackage, sf:SetFlattener, class-tree:DynTree) :
   ;Driver
   defn driver () :
-    val class-tree = make-class-tree()
+    ;val class-tree = make-class-tree()
     val method-table = create-method-table()
     val dag-table = create-dag-table(class-tree, method-table)
     build-method-table(class-tree, dag-table)
-
-  ;Create a class tree
-  defn make-class-tree () -> DynTree :
-    ;Retrieve all ids in type
-    defn parent-ids (t:EType|False) :
-      let loop (t:EType|False = t) :
-        match(t) :
-          (t:EAnd) : cat(loop(a(t)), loop(b(t)))
-          (t:EOf) : [n(t)]
-          (t:False) : []
-
-    ;Create class tree
-    DynTree $ for e in exps(epackage) seq? :
-        match(e) :
-          (e:EDefType) : One(NodeState(n(e), to-tuple(parent-ids(parent(e))), children(e), false))
-          (e:EDefStruct) : One(NodeState(n(e), to-tuple(parent-ids(parent(e))), [], true))
-          (e:EDefObject): One(NodeState(n(e), to-tuple(parent-ids(parent(e))), [], true))
-          (e) : None()
 
   ;Create method table
   defn create-method-table () :
@@ -2997,7 +2998,7 @@ defn disjoint? (ehier:EHier, t1:EType, t2:EType) -> True|False :
 
 val trace-constant-folding? = false
 
-defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
+defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, sf:SetFlattener, class-tree:DynTree, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
   defn fold-in-body (e:EBody, top:False|Int, args:Tuple<Int>, vt:VarTable) -> EBody :
     val bindings = IntTable<EImm>()
     defn type* (e:EImm) :
@@ -3090,6 +3091,22 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
               i
           else :
             i
+        (i:EMatch) :
+          defn to-args (types:Tuple<EType>) -> Tuple<Arg> :
+            map(etype-to-arg{class-tree, sf, _, false}, types)
+          val args = to-args $ map(type*, ys(i))
+          val eligible-branches = to-tuple $ for b in branches(i) filter :
+            all?(overlap?, args, to-args $ types(b))
+          if length(eligible-branches) == length(branches(i)) :
+            i
+          else :
+            maybe-changed(top)
+            if empty?(eligible-branches) :
+              sub-branches(i, [])
+            else if all?(subarg?, args, to-args $ types(eligible-branches[0])) :
+              EGoto(n(eligible-branches[0]))
+            else :
+              sub-branches(i, eligible-branches)
         (i:EIf) :
           ;; println("CONSIDERING %_ -> %_" % [i, map(constant?, ys(i))])
           defn result (res:True|False) :
@@ -3115,20 +3132,6 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
               i
           else :
             i
-        (i:EMatch) :
-          val ys-types = map(type*, ys(i))
-          ;; println("TRYING TO FOLD %_ TYPES %_" % [i, ys-types])
-          label<EIns> return :
-            for b in branches(i) do :
-              ;; println("--- SUBTYPE? %_ DISJOINT? %_" % [to-tuple $ seq(subtype?{ehier, _, _}, ys-types, types(b)), to-tuple $ seq(disjoint?{ehier, _, _}, ys-types, types(b))])
-              if all?(subtype?{ehier, _, _}, ys-types, types(b)) :
-                println("---- FOLDING %_: %_ -> %_" % [i, ys-types, b]) when trace-constant-folding?
-                maybe-changed(top)
-                return(EGoto(n(b)))
-              else if not any?(disjoint?{ehier, _, _}, ys-types, types(b)) :
-                ;println("---- ABORTING %_" % [b])
-                return(i)
-            i
         (e:EObjectGet) :
           match(y(e)) :
             (y:EVar) :
@@ -3142,7 +3145,6 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, enabled?: Int 
                     (f:False) : default()
                 (f) : default()
             (y) : default()
-
         ;; TODO: REQUIRES MUT? FLAG ON FIELDS
         ;; (e:ELoad) :
         ;;   match(loc(e)) :
@@ -3558,7 +3560,7 @@ defn common-subexpression-elimination (epackage:EPackage, gvt:VarTable) -> EPack
 ;============================================================
 ;=================== RESOLVE MATCHES ========================
 ;============================================================
-defn resolve-matches (epackage:EPackage, ehier:EHier, gvt:VarTable) -> EPackage :
+defn resolve-matches-coverage (epackage:EPackage, ehier:EHier, gvt:VarTable) -> EPackage :
   defn resolve-in-body (e:EBody, vt:VarTable) -> EBody :
     val ins* = for i in ins(e) map :
       match(i) :

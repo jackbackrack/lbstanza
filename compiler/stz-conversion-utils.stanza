@@ -9,7 +9,7 @@ defpackage stz/conversion-utils :
 
 public defn set-to-arg (s:NumSet, sf:SetFlattener) -> Arg :
   match(flatten(sf, s)) :
-    (s:AtomSet) : Nums(values(s))
+    (s:AtomSet) : Nums(qsort $ values(s))
     (s:AllSet) : Top()
 
 public defn etype-to-arg (ct:DynTree, sf:SetFlattener, t:EType, include-abstract?:True|False) -> Arg :
