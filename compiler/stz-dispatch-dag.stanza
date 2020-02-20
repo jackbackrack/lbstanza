@@ -95,40 +95,12 @@ defmethod print (o:OutputStream, s:AmbSoln) :
 ;====================== Relations ===========================
 ;============================================================
 
-defn assert-sorted (t:Tuple<Int>) :
-  let loop (i:Int = 1) :
-    if i < length(t) :
-      if t[i - 1] > t[i] :
-        fatal("UNSORTED %_" % [t])
-      loop(i + 1)
+defn intersect (a:Arg, b:Arg) -> Arg :
+  match(a, b) :
+    (a:Top, b) : b
+    (a, b:Top) : a
+    (a:Nums, b:Nums) : Nums(to-tuple $ intersect(values(a), values(b)))
 
-defn overlap? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
-  val [na, nb] = [length(a), length(b)]
-  let loop (i:Int = 0, j:Int = 0) :
-    if i < na and j < nb :
-      val [ai, bj] = [a[i], b[j]]
-      if ai < bj :
-        loop(i + 1, j)
-      else if bj < ai :
-        loop(i, j + 1)
-      else :
-        true
-    else :
-      false
-
-defn subset? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
-  val [na, nb] = [length(a), length(b)]
-  let loop (i:Int = 0, j:Int = 0) :
-    if i < na and j < nb :
-      val [ai, bj] = [a[i], b[j]]
-      if ai < bj :
-        false
-      else if bj < ai :
-        loop(i, j + 1)
-      else :
-        loop(i + 1, j + 1)
-    else :
-      i >= na
 
 public defn subarg? (x:Arg, y:Arg) :
   match(x, y):
