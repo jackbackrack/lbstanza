@@ -35,6 +35,8 @@ public defn lower-unoptimized (epackage:EPackage) -> EPackage :
 ;============================================================
 
 defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
+  val lower-timer = MillisecondTimer("LOWER")
+  start(lower-timer)
   ;Reset id generation
   take-ids(epackage)
 
@@ -161,6 +163,8 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;if optimize? : spit("out.txt", cur-package)
 
   ;Return processed package
+  stop(lower-timer)
+  println(lower-timer)
   cur-package
 
 ;============================================================
