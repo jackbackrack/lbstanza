@@ -66,12 +66,17 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   defn run-pass (pass-name:String, f:(EPackage, EHier, VarTable) -> EPackage, suffix:String, update-tables?:True|False) :
     run-pass(pass-name, f{_, ehier, global-vt}, suffix, update-tables?)
 
+  val multi-ids = [ValId(`core, `do)]
+  val defn-ids = [ValId(`core, `Range), ValId(`collections, `bsearch)]
+
+  defn match-id? (x:RecId, y:RecId) -> True|False :
+    package(x) == package(y) and name(x) == name(y)
+
   val inlineable-multis = to-intset $ generate<Int> :
     for e in exports(packageio(epackage)) do :
       val rec = rec(e)
       match(rec:MultiRec) :
-        val rid = id(rec)
-        yield(n(e)) when ((package(rid) == `core and name(rid) == `do))
+        yield(n(e)) when any?(match-id?{id(rec), _}, multi-ids)
 
   println("INLINEABLE-MULTIS %_" % [to-tuple $ inlineable-multis])
 
@@ -79,8 +84,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     for e in exports(packageio(epackage)) do :
       val rec = rec(e)
       match(rec:FnRec) :
-        val rid = id(rec)
-        yield(n(e)) when ((package(rid) == `core and name(rid) == `Range))
+        yield(n(e)) when any?(match-id?{id(rec), _}, defn-ids)
 
   println("INLINEABLE-DEFNS %_" % [to-tuple $ inlineable-defns])
 
@@ -160,7 +164,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;;   run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
   ;;   spit("out3.txt", cur-package)
 
-  ;if optimize? : spit("out.txt", cur-package)
+  if optimize? : spit("out.txt", cur-package)
 
   ;Return processed package
   stop(lower-timer)
