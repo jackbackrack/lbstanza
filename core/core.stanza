@@ -6242,6 +6242,7 @@ public defn to-tuple<?T> (xs:Seqable<?T>) -> Tuple<T> :
             t[i] = x
          t
       (xs) :
+         println("SLOW")
          to-tuple(to-vector<T>(xs))
 
 public defn String (cs:Seqable<Char>) -> String :
@@ -6354,15 +6355,24 @@ public defn to-collection<?T> (f:() -> Seq<?T>) -> Collection<T> :
   new Collection<T> :
     defmethod to-seq (this) : f()
 
-public defn seq<?T,?S> (f:T -> ?S, xs:Seqable<?T>) -> Seq<S> :
+public defn seq<?T,?S> (f: T -> ?S, xs:Seqable<?T>) -> Seq<S> :
+  var item = sentinel
   val xs-seq = to-seq(xs)
-  val rs = repeat-while $ fn () :
-    if empty?(xs-seq) : None()
-    else : One(f(next(xs-seq)))
+  val rs = new Seq<S> :
+    defmethod next (this) :
+      val x = peek(this)
+      item = sentinel
+      x
+    defmethod peek (this) :
+      if item is Sentinel :
+        fatal("Empty Sequence") when empty?(this)
+        item = f(next(xs-seq))
+      item as S
+    defmethod empty? (this) :
+      empty?(xs-seq)
   match(xs-seq) :
-    (xs:Seq&Lengthable) :
-      wrap-length(rs, {cached(rs) + length(xs)})
-    (xs) : rs
+    (xss:Seq&Lengthable) : (val len = length(xss), wrap-length(rs, {len}))
+    (xss) : rs
 
 public defn seq<?T,?S,?R> (f:(T,S) -> ?R, xs:Seqable<?T>, ys:Seqable<?S>) -> Seq<R> :
   val xs-seq = to-seq(xs)
