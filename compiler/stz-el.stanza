@@ -3006,6 +3006,76 @@ defn disjoint? (ehier:EHier, t1:EType, t2:EType) -> True|False :
 
 val trace-constant-folding? = false
 
+defmulti hi-fold-binary-op (op:EOp, f:? -> EIns, a0:?, a1:?) -> False|EIns
+
+defmethod hi-fold-binary-op (op:EOp, f:? -> EIns, a0:?, a1:?) : false
+
+defmethod hi-fold-binary-op (op:IntAddOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 + a1)
+defmethod hi-fold-binary-op (op:IntSubOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 - a1)
+defmethod hi-fold-binary-op (op:IntMulOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 * a1)
+defmethod hi-fold-binary-op (op:IntDivOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 / a1)
+defmethod hi-fold-binary-op (op:IntModOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 % a1)
+defmethod hi-fold-binary-op (op:IntAndOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 & a1)
+defmethod hi-fold-binary-op (op:IntOrOp,   f:? -> EIns, a0:Int, a1:Int) : f(a0 | a1)
+defmethod hi-fold-binary-op (op:IntXorOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 ^ a1)
+defmethod hi-fold-binary-op (op:IntShlOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 << a1)
+defmethod hi-fold-binary-op (op:IntShrOp,  f:? -> EIns, a0:Int, a1:Int) : f(a0 >> a1)
+defmethod hi-fold-binary-op (op:IntAshrOp, f:? -> EIns, a0:Int, a1:Int) : f(a0 >>> a1)
+defmethod hi-fold-binary-op (op:IntLtOp,   f:? -> EIns, a0:Int, a1:Int) : f(a0 < a1)
+defmethod hi-fold-binary-op (op:IntGtOp,   f:? -> EIns, a0:Int, a1:Int) : f(a0 > a1)
+defmethod hi-fold-binary-op (op:IntLeOp,   f:? -> EIns, a0:Int, a1:Int) : f(a0 <= a1)
+defmethod hi-fold-binary-op (op:IntGeOp,   f:? -> EIns, a0:Int, a1:Int) : f(a0 >= a1)
+defmethod hi-fold-binary-op (op:LtOp,      f:? -> EIns, a0:Int, a1:Int) : f(a0 < a1)
+defmethod hi-fold-binary-op (op:GtOp,      f:? -> EIns, a0:Int, a1:Int) : f(a0 > a1)
+defmethod hi-fold-binary-op (op:LeOp,      f:? -> EIns, a0:Int, a1:Int) : f(a0 <= a1)
+defmethod hi-fold-binary-op (op:GeOp,      f:? -> EIns, a0:Int, a1:Int) : f(a0 >= a1)
+defmethod hi-fold-binary-op (op:EqOp,      f:? -> EIns, a0:Int, a1:Int) : f(a0 == a1)
+defmethod hi-fold-binary-op (op:NeOp,      f:? -> EIns, a0:Int, a1:Int) : f(a0 != a1)
+
+defmulti lo-fold-binary-op (op:EOp, f:? -> EIns, a0:?, a1:?) -> False|EIns
+
+defmethod lo-fold-binary-op (op:EOp, f:? -> EIns, a0:?, a1:?) : false
+
+#for (Prim in [Byte Int Long]) :
+  defmethod lo-fold-binary-op (op:ModOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 % a1)
+  defmethod lo-fold-binary-op (op:AndOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 & a1)
+  defmethod lo-fold-binary-op (op:OrOp,      f:? -> EIns, a0:Prim, a1:Prim) : f(a0 | a1)
+  defmethod lo-fold-binary-op (op:XorOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 ^ a1)
+  defmethod lo-fold-binary-op (op:ShlOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 << a1)
+  defmethod lo-fold-binary-op (op:ShrOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 >> a1)
+
+#for (Prim in [Int Long]) :
+  defmethod lo-fold-binary-op (op:AshrOp,    f:? -> EIns, a0:Prim, a1:Prim) : f(a0 >>> a1)
+
+#for (Prim in [Byte Int Long Float Double]) :
+  defmethod lo-fold-binary-op (op:AddOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 + a1)
+  defmethod lo-fold-binary-op (op:SubOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 - a1)
+  defmethod lo-fold-binary-op (op:MulOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 * a1)
+  defmethod lo-fold-binary-op (op:DivOp,     f:? -> EIns, a0:Prim, a1:Prim) : f(a0 / a1)
+  defmethod lo-fold-binary-op (op:LtOp,      f:? -> EIns, a0:Prim, a1:Prim) : f(a0 < a1)
+  defmethod lo-fold-binary-op (op:GtOp,      f:? -> EIns, a0:Prim, a1:Prim) : f(a0 > a1)
+  defmethod lo-fold-binary-op (op:LeOp,      f:? -> EIns, a0:Prim, a1:Prim) : f(a0 <= a1)
+  defmethod lo-fold-binary-op (op:GeOp,      f:? -> EIns, a0:Prim, a1:Prim) : f(a0 >= a1)
+  defmethod lo-fold-binary-op (op:EqOp,      f:? -> EIns, a0:Prim, a1:Prim) : f(a0 == a1)
+  defmethod lo-fold-binary-op (op:NeOp,      f:? -> EIns, a0:Prim, a1:Prim) : f(a0 != a1)
+
+defmulti hi-fold-unary-op (op:EOp, f:? -> EIns, a0:?) -> False|EIns
+
+defmethod hi-fold-unary-op (op:EOp, f:? -> EIns, a0:?) : false
+
+defmethod hi-fold-unary-op (op:IntNegOp, f:? -> EIns, a0:Int) : f(negate(a0))
+defmethod hi-fold-unary-op (op:IntNotOp, f:? -> EIns, a0:Int) : f(bit-not(a0))
+
+defmulti lo-fold-unary-op (op:EOp, f:? -> EIns, a0:?) -> False|EIns
+
+defmethod lo-fold-unary-op (op:EOp, f:? -> EIns, a0:?) : false
+
+#for (Prim in [Int Long Float Double]) :
+  defmethod lo-fold-unary-op (op:NegOp, f:? -> EIns, a0:Prim) :    f(negate(a0))
+
+#for (Prim in [Byte Int Long]) :
+  defmethod lo-fold-unary-op (op:NotOp, f:? -> EIns, a0:Prim) :    f(bit-not(a0))
+
 defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, class-tree:DynTree, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
   defn fold-in-body (e:EBody, top:False|Int, args:Tuple<Int>, vt:VarTable) -> EBody :
     val bindings = IntTable<EImm>()
@@ -3021,12 +3091,19 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, class-tree:Dyn
            (f) : type(vt, e)
         (e) :
           type(vt, e)
-    defn constant? (e:EImm) :
+    defn hi-constant? (e:EImm) :
       match(e) :
-       (e:ELiteral|ELSLiteral) : true
+       (e:ELiteral) : true
        (e:EVar) :
          val b  = get?(bindings, n(e))
-         match(b:ELiteral|ELSLiteral) : value(b) is-not EObject
+         match(b:ELiteral) : value(b) is-not EObject
+       (e) : false
+    defn lo-constant? (e:EImm) :
+      match(e) :
+       (e:ELSLiteral) : true
+       (e:EVar) :
+         val b  = get?(bindings, n(e))
+         match(b:ELSLiteral) : value(b) is-not EObject
        (e) : false
     defn constant-value (e:EImm) :
       match(e) :
@@ -3067,36 +3144,60 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, class-tree:Dyn
               (y) : false
           e
         (i:EPrim) :
-          defn result (value) :
-            val lit = ELiteral(value)
-            println("FOLDING %_ -> %_" % [i, lit]) when trace-constant-folding?
-            bindings[n(x(i))] = lit
-            maybe-changed(top)
-            EDef(x(i), lit)
           ;; println("CONSIDERING %_ -> %_" % [i, map(constant?, ys(i))])
-          if all?(constant?, ys(i)) :
+          if all?(hi-constant?, ys(i)) :
+            defn hi-result (value) :
+              val lit = ELiteral(value)
+              println("HI PRIM FOLDING %_ -> %_" % [i, lit]) when trace-constant-folding?
+              bindings[n(x(i))] = lit
+              maybe-changed(top)
+              EDef(x(i), lit)
+
             val args = map(constant-value, ys(i))
-            if all?({ _ is Int}, args) :
-              match(op(i)) :
-                (o:IntAddOp) : result((args[0] as Int) + (args[1] as Int))
-                (o:IntSubOp) : result((args[0] as Int) - (args[1] as Int))
-                (o:IntMulOp) : result((args[0] as Int) * (args[1] as Int))
-                (o:IntDivOp) : result((args[0] as Int) / (args[1] as Int))
-                (o:IntModOp) : result((args[0] as Int) % (args[1] as Int))
-                (o:IntLtOp) :  result((args[0] as Int) < (args[1] as Int))
-                (o:IntGtOp) :  result((args[0] as Int) > (args[1] as Int))
-                (o:IntLeOp) :  result((args[0] as Int) <= (args[1] as Int))
-                (o:IntGeOp) :  result((args[0] as Int) >= (args[1] as Int))
-                (o:IntNegOp) :  result(negate(args[0] as Int))
-                (o:LtOp) :  result((args[0] as Int) < (args[1] as Int))
-                (o:GtOp) :  result((args[0] as Int) > (args[1] as Int))
-                (o:LeOp) :  result((args[0] as Int) <= (args[1] as Int))
-                (o:GeOp) :  result((args[0] as Int) >= (args[1] as Int))
-                (o:EqOp) :  result(args[0] == args[1])
-                (o:NeOp) :  result(args[0] != args[1])
-                (o) : i
-            else :
-              i
+            val res = switch { length(args) == _ } :
+              1 : hi-fold-unary-op(op(i), hi-result, args[0])
+              2 : hi-fold-binary-op(op(i), hi-result, args[0], args[1])
+              else : false
+            match(res:EIns) : res
+            else: i
+          else if all?(lo-constant?, ys(i)) :
+            defn lo-result (value) :
+              val lit = ELSLiteral(value)
+              println("LO PRIM FOLDING %_ -> %_" % [i, lit]) when trace-constant-folding?
+              bindings[n(x(i))] = lit
+              maybe-changed(top)
+              EDef(x(i), lit)
+
+            val args = map(constant-value, ys(i))
+            val res = switch { length(args) == _ } :
+              1 : lo-fold-unary-op(op(i), lo-result, args[0])
+              2 : lo-fold-binary-op(op(i), lo-result, args[0], args[1])
+              else : false
+            match(res:EIns) : res
+            else: i
+          else :
+            i
+        (i:EIf) :
+          ;; println("CONSIDERING %_ -> %_" % [i, map(constant?, ys(i))])
+          defn if-result (kind:String, res:True|False) :
+            println("%_ IF FOLDING %_ -> %_" % [kind, i, res]) when trace-constant-folding?
+            maybe-changed(top)
+            EGoto(n1(i) when res else n2(i))
+          if all?(hi-constant?, ys(i)) :
+            val args = map(constant-value, ys(i))
+            switch { length(args) == _ } :
+              2 : match(hi-fold-binary-op(op(i) as EOp, if-result{"HI", _}, , args[0], args[1])) :
+                    (res:EIns)  : res
+                    (res:False) : i
+              else : i
+          else if all?(lo-constant?, ys(i)) :
+            val args = map(constant-value, ys(i))
+            switch { length(args) == _ } :
+              1 : if-result("LO", args[0] == 1)
+              2 : match(lo-fold-binary-op(op(i) as EOp, if-result{"LO", _}, args[0], args[1])) :
+                    (res:EIns)  : res
+                    (res:False) : i
+              else : i
           else :
             i
         (i:EMatch) :
@@ -3115,31 +3216,6 @@ defn constant-fold (epackage:EPackage, ehier:EHier, gvt:VarTable, class-tree:Dyn
               EGoto(n(eligible-branches[0]))
             else :
               sub-branches(i, eligible-branches)
-        (i:EIf) :
-          ;; println("CONSIDERING %_ -> %_" % [i, map(constant?, ys(i))])
-          defn result (res:True|False) :
-            println("FOLDING %_ -> %_" % [i, res]) when trace-constant-folding?
-            maybe-changed(top)
-            EGoto(n1(i) when res else n2(i))
-          if all?(constant?, ys(i)) :
-            val args = map(constant-value, ys(i))
-            if all?({_ is Int}, args) :
-              match(op(i)) :
-                (o:IntLtOp) :  result((args[0] as Int) < (args[1] as Int))
-                (o:IntGtOp) :  result((args[0] as Int) > (args[1] as Int))
-                (o:IntLeOp) :  result((args[0] as Int) <= (args[1] as Int))
-                (o:IntGeOp) :  result((args[0] as Int) >= (args[1] as Int))
-                (o:LtOp) :  result((args[0] as Int) < (args[1] as Int))
-                (o:GtOp) :  result((args[0] as Int) > (args[1] as Int))
-                (o:LeOp) :  result((args[0] as Int) <= (args[1] as Int))
-                (o:GeOp) :  result((args[0] as Int) >= (args[1] as Int))
-                (o:EqOp) :  result(args[0] == args[1])
-                (o:NeOp) :  result(args[0] != args[1])
-                (o) : i
-            else :
-              i
-          else :
-            i
         (e:EObjectGet) :
           match(y(e)) :
             (y:EVar) :
