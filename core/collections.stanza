@@ -45,7 +45,7 @@ defn bsearch<?T,?S> (less?: (T, S) -> True|False,
                      v:?S) -> Int :
   let num-smaller (l:Int = 0, r:Int = n - 1) :
     if l <= r :
-      val m = l + (r - l) / 2
+      val m = l + (r - l) >> 1
       if xs[m] < v :
         num-smaller(m + 1, r)
       else :
