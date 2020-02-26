@@ -143,13 +143,39 @@ public defn union (args:Seqable<Arg>) -> Arg :
     if empty?(nums) : Nums([])
     else : Nums $ to-tuple $ union(nums)
 
+defn subset-of-union? (ss:Seq<Int>, us:Vector<Seq<Int>>) -> True|False :
+  let loop () :
+    if empty?(ss) :
+      true
+    else :
+      val s = peek(ss)
+      var all-empty? = true
+      for es in us do :
+        let search () :
+          if not empty?(es) :
+            all-empty? = false
+            val e = peek(es)
+            if e < s :
+              next(es)
+              search()
+            else if e == s :
+              next(ss)
+              loop()
+      if all-empty? :
+        false
+      else :
+        loop() 
+  
+val *SUBSET-UNION-VECTOR* = Vector<Seq<Int>>()
+
 public defn subarg-of-union? (x:Arg, ys:Seqable<Arg>) :
+  clear(*SUBSET-UNION-VECTOR*)
   label<True|False> return :
     val nums = for y in ys seq :
       match(y:Top) : return(true)
-      else : values(y as Nums)
+      else : add(*SUBSET-UNION-VECTOR*, to-seq(values(y as Nums)))
     match(x:Nums) :
-      subset?(to-seq(values(x)), to-seq(union(nums)))
+      subset-of-union?(to-seq(values(x)), *SUBSET-UNION-VECTOR*)
 
 public defn intersect (args:Seqable<Arg>) -> Arg :
   val nums = seq(values, filter-by<Nums>(args))

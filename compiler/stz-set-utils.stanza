@@ -27,11 +27,13 @@ public defn subset? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
       else :
         i >= na
 
-public defn subset? (a:Seq<Int>, b:Seq<Int>) -> True|False :
-  val sa = to-seq(a)
-  val sb = to-seq(b)
+public defn subset? (sa:Seq<Int>, sb:Seq<Int>) -> True|False :
   let loop () :
-    if not empty?(sa) and not empty?(sb) :
+    if empty?(sa) :
+      true
+    else if empty?(sb) :
+      false
+    else :
       val [ai, bj] = [peek(sa), peek(sb)]
       if ai < bj :
         false
@@ -42,8 +44,6 @@ public defn subset? (a:Seq<Int>, b:Seq<Int>) -> True|False :
         next(sa)
         next(sb)
         loop()
-    else :
-      empty?(sa)
 
 public defn union (a:Seqable<Int>, b:Seqable<Int>) -> Seq<Int> :
   generate<Int> :
