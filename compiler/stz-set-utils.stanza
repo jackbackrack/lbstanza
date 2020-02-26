@@ -5,28 +5,42 @@ defpackage stz/set-utils :
 
 public defn overlap? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
   val [na, nb] = [length(a), length(b)]
-  let loop (i:Int = 0, j:Int = 0) :
-    if i < na and j < nb :
-      val [ai, bj] = [a[i], b[j]]
-      if ai < bj : loop(i + 1, j)
-      else if bj < ai : loop(i, j + 1)
-      else : true
+  let loop (i:Int = 0) :
+    if i >= na :
+      true
+    else :
+      val ai = a[i]
+      let search (l:Int = 0, r:Int = nb - 1) :
+        if l <= r :
+          val m = l + (r - l) >> 1
+          val bm = b[m]
+          if bm < ai :
+            search(m + 1, r)
+          else if bm > ai :
+            search(l, m - 1)
+          else :
+            true
+        else :
+          loop(i + 1)
 
 public defn subset? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
   val [na, nb] = [length(a), length(b)]
-  if na <= nb :
-    let loop (i:Int = 0, j:Int = 0) :
-      if i < na and j < nb :
-        val [ai, bj] = [a[i], b[j]]
-        if ai < bj :
-          false
-        else if bj < ai :
-          loop(i, j + 1)
-        else :
-          loop(i + 1, j + 1)
-      else :
-        i >= na
-
+  let loop (i:Int = 0, j:Int = 0) :
+    if i >= na :
+      true
+    else :
+      val ai = a[i]
+      let search (l:Int = j, r:Int = nb - 1) :
+        if l <= r :
+          val m = l + (r - l) >> 1
+          val bm = b[m]
+          if bm < ai :
+            search(m + 1, r)
+          else if bm > ai :
+            search(l, m - 1)
+          else :
+            loop(i + 1, m + 1)
+          
 public defn subset? (sa:Seq<Int>, sb:Seq<Int>) -> True|False :
   let loop () :
     if empty?(sa) :
