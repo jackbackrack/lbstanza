@@ -1,8 +1,7 @@
 defpackage stz/dispatch-dag :
   import core
   import collections
-  import stz/utils with:
-    prefix(IntListTable, ListTable) => utils-
+  import stz/set-utils
 
 ;============================================================
 ;==================== Input Datastructure ===================
@@ -11,7 +10,7 @@ defpackage stz/dispatch-dag :
 public deftype Arg <: Hashable & Equalable
 public defstruct Top <: Arg
 public defstruct Nums <: Arg :
-  values: Tuple<Int>
+  values: Tuple<Int> with: (ensure => sorted!)
 
 public defstruct Branch :
   args: Tuple<Arg>
@@ -41,6 +40,11 @@ defn different! (a:Int) :
     if a == b :
       fatal("The value given to %_ (%_) should not be equal to %_." % [
         description, b, a])
+
+defn sorted! (description:String, vs:Tuple<Int>) :
+  for i in 0 to length(vs) - 1 do :
+    if vs[i] >= vs[i + 1] :
+      fatal("The value given to %_ (%_) is not sorted." % [description, vs])
 
 ;============================================================
 ;=================== Hash and Equality ======================
@@ -106,8 +110,7 @@ public defn subarg? (x:Arg, y:Arg) :
   match(x, y):
     (x:Top, y:Top) : true
     (x:Nums, y:Top) : true
-    (x:Nums, y:Nums) : if length(values(x)) <= length(values(y)) :
-                         subset?(values(x), values(y))
+    (x:Nums, y:Nums) : subset?(values(x), values(y))
     (x, y): false
 
 public defn bottom? (x:Arg) :
@@ -153,54 +156,26 @@ public defn case? (case:Tuple<Int>, b:Branch) :
   fatal("Mismatched lengths") when length(case) != length(args(b))
   all?(covered?, case, args(b))
 
-val NUM-BUFFER = Vector<Int>()
-public defn union (args:Seqable<Arg>) -> Arg :
-  defn make-num-arg () :
-    qsort!(NUM-BUFFER)
-    remove-duplicates!(NUM-BUFFER)
-    Nums(to-tuple(NUM-BUFFER))
-  defn add-to-num-buffer () :
-    clear(NUM-BUFFER)
-    val arg-seq = to-seq(args)
-    let loop () :
-      if empty?(arg-seq) :
-        make-num-arg()
-      else :
-        match(next(arg-seq)) :
-          (arg:Top) :
-            arg
-          (arg:Nums) :
-            add-all(NUM-BUFFER, values(arg))
-            loop()
-  ;Launch!
-  add-to-num-buffer()
-  
-;val UNION-SET = IntSet()
-;public defn union (args:Seqable<Arg>) -> Top|IntSet :
-;  clear(UNION-SET)
-;  val arg-seq = to-seq(args)
-;  let loop () :
-;    if empty?(arg-seq) :
-;      UNION-SET
-;    else :
-;      match(next(arg-seq)) :
-;        (arg:Top) :
-;          arg
-;        (arg:Nums) :
-;          add-all(UNION-SET, values(arg))
-;          loop()
-;
-;  
-;public defn union (args:Seqable<Arg>) -> Arg :
-;  start(union-timer)
-;  val result = label<Arg> return :
-;    for arg in args do :
-;      match(arg) :
-;        (arg:Top) : return(arg)
-;        (arg:Nums) : add-all(OVERLAP-SET, values(arg))
-;    Nums(qsort(OVERLAP-SET))
-;  clear(OVERLAP-SET)
-;  result
+public defn union (args:Seqable<Arg>) -> Arg :  
+  label<Arg> return :
+    val nums = for arg in args seq :
+      match(arg:Top) : return(arg)
+      else : values(arg as Nums)
+    if empty?(nums) : Nums([])
+    else : Nums $ to-tuple $ union(nums)
+
+public defn subarg-of-union? (x:Arg, ys:Seqable<Arg>) :
+  label<True|False> return :
+    val nums = for y in ys seq :
+      match(y:Top) : return(true)
+      else : values(y as Nums)
+    match(x:Nums) :
+      subset?(to-seq(values(x)), to-seq(union(nums)))
+
+public defn intersect (args:Seqable<Arg>) -> Arg :
+  val nums = seq(values, filter-by<Nums>(args))
+  if empty?(nums) : Top()
+  else : Nums $ to-tuple $ intersect(nums)
 
 ;============================================================
 ;======================= Soln Checker =======================
@@ -235,28 +210,6 @@ public defn check-ordered (s:Soln, case:Tuple<Int>, table:BranchTable) -> True|F
       case?(case, bs[index(s)]) and
       for i in 0 to index(s) none? :
         case?(case, bs[i])
-
-;============================================================
-;=================== Canonicalization =======================
-;============================================================
-
-defn canonicalize (btable:BranchTable) :
-  ;Sorting buffer
-  val buffer = Vector<Int>()
-  defn sort (xs:Tuple<Int>) :
-    add-all(buffer, xs)
-    qsort!(buffer)
-    val result = to-tuple(buffer)
-    clear(buffer)
-    result
-
-  defn canon (a:Arg) :
-    match(a:Nums) : Nums(sort(values(a)))
-    else : a
-  defn canon (b:Branch) :
-    Branch(map(canon, args(b)))
-  BranchTable(map(canon, branches(btable)),
-              abstract-nums(btable))
 
 ;============================================================
 ;====================== Ancestor Table ======================
@@ -520,9 +473,8 @@ defn all-cases (dag:Dag) :
 ;================== Computing the Dispatch Dag ==============
 ;============================================================
 
-public defn compute-dispatch-dag (input-btable:BranchTable, topological?:True|False) -> Dag :
+public defn compute-dispatch-dag (btable:BranchTable, topological?:True|False) -> Dag :
   ;Canonicalize table
-  val btable = canonicalize(input-btable)
   val num-branches = length(branches(btable))
   ;Empty branch table
   if empty?(branches(btable)) :
@@ -549,9 +501,8 @@ public defn all-solns (dag:Dag, case:Tuple<Arg>, include-amb?:True|False) -> Tup
   val solns = HashSet<Soln>()
 
   ;Test whether the default case is reachable
-   defn default-reachable? (e:DagEntry, arg:Arg) :
-     val entry-arg = union(seq(key, entries(e)))
-     not subarg?(arg, entry-arg)
+  defn default-reachable? (e:DagEntry, arg:Arg) :
+    not subarg-of-union?(arg, seq(key, entries(e)))
 
   ;Algorithm
   defn* loop (e:DagEntry) :

@@ -3,42 +3,78 @@ defpackage stz/set-utils :
   import collections
   import stz/utils
 
-;============================================================
-;====================== Datastructure =======================
-;============================================================
+public defn overlap? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
+  val [na, nb] = [length(a), length(b)]
+  let loop (i:Int = 0, j:Int = 0) :
+    if i < na and j < nb :
+      val [ai, bj] = [a[i], b[j]]
+      if ai < bj : loop(i + 1, j)
+      else if bj < ai : loop(i, j + 1)
+      else : true
 
-public deftype NumSet
+public defn subset? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
+  val [na, nb] = [length(a), length(b)]
+  if na <= nb :
+    let loop (i:Int = 0, j:Int = 0) :
+      if i < na and j < nb :
+        val [ai, bj] = [a[i], b[j]]
+        if ai < bj :
+          false
+        else if bj < ai :
+          loop(i, j + 1)
+        else :
+          loop(i + 1, j + 1)
+      else :
+        i >= na
 
-public defstruct IntersectSet <: NumSet :
-  sets: Tuple<NumSet>
-with:
-  printer => true
+public defn subset? (a:Seq<Int>, b:Seq<Int>) -> True|False :
+  val sa = to-seq(a)
+  val sb = to-seq(b)
+  let loop () :
+    if not empty?(sa) and not empty?(sb) :
+      val [ai, bj] = [peek(sa), peek(sb)]
+      if ai < bj :
+        false
+      else if bj < ai :
+        next(sb)
+        loop()
+      else :
+        next(sa)
+        next(sb)
+        loop()
+    else :
+      empty?(sa)
 
-public defstruct UnionSet <: NumSet :
-  sets: Tuple<NumSet>
-with:
-  printer => true
+public defn union (a:Seqable<Int>, b:Seqable<Int>) -> Seq<Int> :
+  generate<Int> :
+    val [sa, sb] = [to-seq(a), to-seq(b)]
+    while not empty?(sa) and not empty?(sb) :
+      val [ai, bj] = [peek(sa), peek(sb)]
+      if ai < bj :
+        yield(next(sa))
+      else if bj < ai :
+        yield(next(sb))
+      else :
+        yield(next(sa))
+        next(sb)
+    do(yield, sa)
+    do(yield, sb)
 
-public defstruct AtomSet <: NumSet :
-  values: Tuple<Int>
-with:
-  printer => true
+public defn intersect (a:Seqable<Int>, b:Seqable<Int>) -> Seq<Int> :
+  generate<Int> :
+    val [sa, sb] = [to-seq(a), to-seq(b)]
+    while not empty?(sa) and not empty?(sb) :
+      val [ai, bj] = [peek(sa), peek(sb)]
+      if ai < bj :
+        next(sa)
+      else if bj < ai :
+        next(sb)
+      else :
+        yield(next(sa))
+        next(sb)
 
-public defstruct AllSet <: NumSet 
-with:
-  printer => true
+public defn union (elts:Seqable<Seqable<Int>>) -> Seqable<Int> :
+  reduce(union, elts)
 
-public defn remove-alls (s:NumSet) :
-  match(s) :
-    (s:IntersectSet) :
-      var sets*:Seq<NumSet> = seq(remove-alls, sets(s))
-      sets* = filter({_ is-not AllSet}, sets*)
-      if empty?(sets*) : AtomSet([])
-      else : IntersectSet(to-tuple(sets*))        
-    (s:UnionSet) :
-      val sets* = map(remove-alls, sets(s))
-      if any?({_ is AllSet}, sets*) : AllSet()
-      else : UnionSet(sets*)
-    (s:AtomSet|AllSet) :
-      s
-    
+public defn intersect (elts:Seqable<Seqable<Int>>) -> Seqable<Int> :
+  reduce(intersect, elts)

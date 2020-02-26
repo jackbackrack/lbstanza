@@ -2690,7 +2690,7 @@ defn make-class-tree (epackage:EPackage) -> DynTree :
 deftype MethodTable
 defmulti resolve-target (t:MethodTable, multi:Int, args:Tuple<EType>) -> Int|False
 
-defn MethodTable (epackage:EPackage, class-tree:DynTree) :
+defn MethodTable (epackage:EPackage, class-tree:DynTree) :  
   ;Driver
   defn driver () :
     ;val class-tree = make-class-tree()

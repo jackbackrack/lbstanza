@@ -430,7 +430,7 @@ defn make-branch-table (ct:ClassTable, branches:Seqable<Seqable<TypeSet>>) :
 defn encode-branch-format (ct:ClassTable, f:BranchFormat) -> Vector<Int> :
   match(f) :
     (f:MatchFormat) :    
-      val branch-table = make-branch-table(ct,branches(f))
+      val branch-table = make-branch-table(ct, branches(f))
       val dag = compute-dispatch-dag(branch-table, false)
       defn soln-id (s:Soln) :
         match(s) :
@@ -438,7 +438,7 @@ defn encode-branch-format (ct:ClassTable, f:BranchFormat) -> Vector<Int> :
           (s:UniqueSoln) : index(s) + 1
       encode-dag(dag, 0, soln-id)
     (f:DispatchFormat) :
-      val branch-table = make-branch-table(ct,branches(f))
+      val branch-table = make-branch-table(ct, branches(f))
       val dag = compute-dispatch-dag(branch-table, true)
       defn soln-id (s:Soln) :
         match(s) :
@@ -447,7 +447,7 @@ defn encode-branch-format (ct:ClassTable, f:BranchFormat) -> Vector<Int> :
           (s:UniqueSoln) : index(s) + 2
       encode-dag(dag, 0, soln-id)
     (f:ResolvedMultiFormat) :
-      val branch-table = make-branch-table(ct,seq(types,methods(f)))
+      val branch-table = make-branch-table(ct, seq(types,methods(f)))
       val dag = compute-dispatch-dag(branch-table, true)
       defn soln-id (s:Soln) :
         match(s) :
