@@ -38,7 +38,7 @@ public defn bsearch-subset? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
             search(l, m - 1)
           else :
             loop(i + 1, m + 1)
-          
+
 public defn subset? (sa:Seq<Int>, sb:Seq<Int>) -> True|False :
   let loop () :
     if empty?(sa) :
