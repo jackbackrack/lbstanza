@@ -3,7 +3,7 @@ defpackage stz/set-utils :
   import collections
   import stz/utils
 
-public defn bsearch-overlap? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
+public defn overlap? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
   val [na, nb] = [length(a), length(b)]
   let loop (i:Int = 0, j:Int = 0) :
     if i < na :
@@ -21,7 +21,7 @@ public defn bsearch-overlap? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
         else :
           loop(i + 1, l)
 
-public defn bsearch-subset? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
+public defn subset? (a:Tuple<Int>, b:Tuple<Int>) -> True|False :
   val [na, nb] = [length(a), length(b)]
   let loop (i:Int = 0, j:Int = 0) :
     if i >= na :
