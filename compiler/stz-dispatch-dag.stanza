@@ -143,6 +143,11 @@ public defn union (args:Seqable<Arg>) -> Arg :
     if empty?(nums) : Nums([])
     else : Nums $ to-tuple $ union(nums)
 
+;Is sub a subset of a union of sets?
+;union-set-indices is a mutable vector of indices uses as iterators
+;step along element of sub and each union-set to test whether all sub elements are elements of union
+;use binary search to speed up search for next index where union-set is >= than sub element
+
 defn subset-of-union? (sub:Tuple<Int>, union-sets:Vector<Tuple<Int>>, union-set-indices:Vector<Int>) :
   let loop (i:Int = 0) :
     if i >= length(sub) :
@@ -160,12 +165,12 @@ defn subset-of-union? (sub:Tuple<Int>, union-sets:Vector<Tuple<Int>>, union-set-
                 search(m + 1, r)
               else if e > s :
                 search(l, m - 1)
-              else : 
-                union-set-indices[m] = m
-                loop(i + 1)
-            else :
-              union-set-indices[j] = length(union-set)
-              search-union(j + 1)
+              else :                                   ;found sub element
+                union-set-indices[m] = m               ;mark position 
+                loop(i + 1)                            ;goto next sub element
+            else :                                     ;did not find sub elemnt
+              union-set-indices[j] = length(union-set) ;mark position
+              search-union(j + 1)                      ;look in next union set
 
 val *SUBSET-UNION-VECTOR* = Vector<Tuple<Int>>()
 val *SUBSET-UNION-VECTOR-INDICES* = Vector<Int>()
