@@ -145,6 +145,11 @@ deftype FrontEnd
 defmulti compile-to-el (f:FrontEnd) -> FrontEndResult
 defmulti dependencies (f:FrontEnd) -> DependencyResult
 
+public val front-end-timer = MillisecondTimer("FRONT-END")
+public val parsing-timer = MillisecondTimer("PARSING")
+public val typing-timer = MillisecondTimer("TYPING")
+public val to-el-timer = MillisecondTimer("TO-EL")
+
 defn FrontEnd (sys:FrontEndInputs) -> FrontEnd :
   ;----------------------------------------------------------
   ;--------------------- State ------------------------------
@@ -158,6 +163,7 @@ defn FrontEnd (sys:FrontEndInputs) -> FrontEnd :
   ;------------------ Main Algorithm ------------------------
   ;----------------------------------------------------------
   defn compile-all-to-el () :
+    start(front-end-timer)
     ;Read all of the given inputs to compiler, and load them into the
     ;compiled package table.
     val input-objs = read-inputs(map(InputSource,inputs(sys)))
@@ -170,7 +176,7 @@ defn FrontEnd (sys:FrontEndInputs) -> FrontEnd :
     if not empty?(supported-vm-packages(sys)) :
       load-package-table(read-inputs(map(InputSource,binding-package-dependencies())))
     ;Begin the resolver loop.
-    let loop () :
+    val res = let loop () :
       val resolved = resolve-packages(input-package-names)
       if verbose?(sys) :
         println("Computed package initialization order: %," % [init-order(resolved)])
@@ -191,6 +197,8 @@ defn FrontEnd (sys:FrontEndInputs) -> FrontEnd :
               println("  package %~ from %~" % [package(source), filename(source)])
           load-package-table $ read-inputs(ss)
           loop()
+    stop(front-end-timer)
+    res
 
   defn vm-bindings? () -> [Bindings|False, Tuple<Symbol>] :
     val vm-packages = supported-vm-packages(sys)
@@ -326,6 +334,7 @@ defn FrontEnd (sys:FrontEndInputs) -> FrontEnd :
     objects  
 
   defn read-ipackages (filename:String) -> Tuple<IPackage> :
+    start(parsing-timer)
     if verbose?(sys) :
       println("Reading from input file %~." % [filename])
     val forms = read-file(filename)
@@ -337,6 +346,7 @@ defn FrontEnd (sys:FrontEndInputs) -> FrontEnd :
     val packages = to-ipackages(expanded, core-imports)
     if verbose?(sys) :
       println("Input file %~ contains packages %,." % [filename, seq(name,packages)])
+    stop(parsing-timer)
     packages
 
   ;----------------------------------------------------------
@@ -426,8 +436,13 @@ defn FrontEnd (sys:FrontEndInputs) -> FrontEnd :
         match(environment-package?(sys, package)) :
           (io:PackageIO) : package-exports(io)
           (f:False) : package-exports-table[package]        
+    start(typing-timer)
     val typed = type-program!(resolved, env)
-    to-el(typed, transient?(sys))
+    stop(typing-timer)
+    start(to-el-timer)
+    val res = to-el(typed, transient?(sys))
+    stop(to-el-timer)
+    res
 
   ;----------------------------------------------------------
   ;------------------- Order Packages -----------------------

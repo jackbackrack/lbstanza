@@ -134,10 +134,14 @@ defpackage stz/compiler-main :
   import stz/front-end
   import stz/proj-manager
   import stz/proj
+  import stz/type-calculus
 
 ;============================================================
 ;============== Main Compilation Algorithm ==================
 ;============================================================
+
+val saving-timer = MillisecondTimer("SAVING")
+
 
 public defn compile (proj-manager:ProjManager,
                      inputs:Collection<String|Symbol>,
@@ -168,7 +172,9 @@ public defn compile (proj-manager:ProjManager,
     if pkg-dir is String and optimize? :
       within save = save-pkgs(pkgstamp-table, output-pkgs) :
         for p in filter-by<EPackage>(packages(result)) do :
+          start(saving-timer)
           save(FastPkg(packageio(p), exps(p)))
+          stop(saving-timer)
 
     ;Depending upon the situation run three different flows
     val situation =
@@ -179,9 +185,27 @@ public defn compile (proj-manager:ProjManager,
         (opt?:False, output:False) : `unoptimized-pkgs
     switch(situation) :
       `optimized-asm :
+        val optimization-timer = MillisecondTimer("OPTIMIZATION")
+        val back-end-timer = MillisecondTimer("BACK-END")
         val packages = Vector<VMPackage|StdPkg>()
+        start(optimization-timer)
         add(packages, combine-and-lower(/packages(result) as Tuple<EPackage|FastPkg>))
+        stop(optimization-timer)
+        start(back-end-timer)
         compile-vmpackages({false}, to-tuple(packages), bindings(result), output as String, false)
+        stop(back-end-timer)
+        println(front-end-timer)
+        println(parsing-timer)
+        println(typing-timer)
+        println(subtype-timer)
+        println(disjoint-timer)
+        println(overlap-timer)
+        println(passable-timer)
+        println(simplify-timer)
+        println(to-el-timer)
+        println(saving-timer)
+        println(optimization-timer)
+        println(back-end-timer)
       `optimized-pkgs :
         ;Already done
         false

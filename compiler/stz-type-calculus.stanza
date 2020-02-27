@@ -254,11 +254,36 @@ defn collapse (t:TTuple) :
 
 ;======== Subtyping Relation ========
 
+defstruct RentrantTimer :
+  count : Int with: ( setter => set-count )
+  value : Timer
+
+defn RentrantTimer (name:String) :
+  RentrantTimer(0, MillisecondTimer(name))
+
+defn start (t:RentrantTimer) :
+  if count(t) == 0 : start(value(t))
+  set-count(t, count(t) + 1)
+
+defn stop (t:RentrantTimer) :
+  set-count(t, count(t) - 1)
+  if count(t) == 0 : stop(value(t))
+
+defmethod print (o:OutputStream, t:RentrantTimer) :
+  print(o, value(t))
+
+public val subtype-timer = RentrantTimer("SUBTYPE")
+public val disjoint-timer = RentrantTimer("DISJOINT")
+public val simplify-timer = RentrantTimer("SIMPLIFY")
+public val passable-timer = RentrantTimer("PASSABLE")
+public val overlap-timer = RentrantTimer("OVERLAP")
+
 ;Does not operate on PolyT
 public defn subtype? (x:Type, y:Type) -> True|False|Unknown :
+   start(subtype-timer)
    fatal("Invalid type: %~" % [x]) when x is-not TBot|TOr|TAnd|TOf|TTuple|TArrow|TVar|TGradual|TUVar
    fatal("Invalid type: %~" % [y]) when y is-not TBot|TOr|TAnd|TOf|TTuple|TArrow|TVar|TGradual|TUVar
-   match(x, y) :
+   val res = match(x, y) :
       ;5. Bottom Type: Fast Path
       (x:TBot, y) : true
       ;4. Gradual Type: Fast Path
@@ -292,6 +317,8 @@ public defn subtype? (x:Type, y:Type) -> True|False|Unknown :
       (x, y:TUVar) : unknown
       ;7. Fall through
       (x, y) : false
+   stop(subtype-timer)
+   res
 
 ;======== Strict Subtyping Relation ========
 
@@ -300,9 +327,10 @@ public defn subtype? (x:Type, y:Type) -> True|False|Unknown :
 ;Transitive. Used only for type simplification.
 ;Does not work on PolyT
 defn subtype! (x:Type, y:Type) -> True|False :
+   start(subtype-timer)
    fatal("Invalid type: %~" % [x]) when x is-not TBot|TOr|TAnd|TOf|TTuple|TArrow|TVar|TGradual|TUVar|TCap
    fatal("Invalid type: %~" % [y]) when y is-not TBot|TOr|TAnd|TOf|TTuple|TArrow|TVar|TGradual|TUVar|TCap
-   match(x, y) :
+   val res = match(x, y) :
       ;7. Captures need to stay unaltered      
       (x:TCap, y) : false
       (x, y:TCap) : false
@@ -336,8 +364,11 @@ defn subtype! (x:Type, y:Type) -> True|False :
       (x, y:TUVar) : false
       ;6. Fall through
       (x, y) : false
+   stop(subtype-timer)
+   res
 
 public defn simplify (t:Type) -> Type :
+   start(simplify-timer)
    defn supertype! (a:Type, b:Type) : subtype!(b, a)
    defn st (t:Type) -> Type :
       match(t) :
@@ -351,7 +382,9 @@ public defn simplify (t:Type) -> Type :
                val ts* = seq(st, ts)
          (t) :
             map(st, t)
-   st(t)
+   val res = st(t)
+   stop(simplify-timer)
+   res
 
 public defn simplify (t:LSType) -> LSType :
    mapr(simplify, t)
@@ -519,7 +552,8 @@ defn flow-result (cn:Int,
          else : fall(ap(a1,r1), ex(a2,r2))
 
 defn simplify (r:FlowResult, top?) -> FlowResult :
-   match(r, top?) :
+   start(simplify-timer)
+   val res = match(r, top?) :
       (r:FAnd, top?:True) :
          match(simplify(a(r), true), simplify(b(r), true)) :
             ;True case
@@ -559,6 +593,8 @@ defn simplify (r:FlowResult, top?) -> FlowResult :
             (a, b) : FOr(a, b)
       (r, top?) :
          r
+   stop(simplify-timer)
+   res
 
 defn eval (r:FlowResult) -> False|Unknown|Type :
    match(r) :
@@ -590,9 +626,10 @@ public defn flow (cn:Int, x:LSType, y:LSType) -> False|Unknown|Type :
 
 ;======== Overlap Relation ========
 public defn overlap? (x:Type, y:Type) -> True|False|Unknown :
+   start(overlap-timer)
    fatal("Invalid type: %~" % [x]) when x is-not TBot|TGradual|TOr|TAnd|TOf|TTuple|TArrow|TVar|TUVar
    fatal("Invalid type: %~" % [y]) when y is-not TBot|TGradual|TOr|TAnd|TOf|TTuple|TArrow|TVar|TUVar
-   match(x, y) :
+   val res = match(x, y) :
       ;5. Bottom Type: Fast Path
       (x:TBot, y) : true
       (x, y:TBot) : true      
@@ -626,12 +663,15 @@ public defn overlap? (x:Type, y:Type) -> True|False|Unknown :
       (x, y:TUVar) : unknown
       ;6. Fall Through
       (x, y) : false
+   stop(overlap-timer)
+   res
 
 public defn overlap? (x:RefT, y:RefT) :
    overlap?(type(x), type(y))
 
 ;======== Partof Relation ========
 defn passable? (x:Type, y:Type) -> True|False|Possibly|Unknown :
+   start(passable-timer)
    fatal("Invalid type: %~" % [x]) when x is-not TBot|TOr|TAnd|TOf|TVar|TTuple|TArrow|TGradual|TUVar|TMixed
    fatal("Invalid type: %~" % [y]) when y is-not TBot|TOr|TAnd|TOf|TVar|TTuple|TArrow|TGradual|TUVar
 
@@ -659,13 +699,15 @@ defn passable? (x:Type, y:Type) -> True|False|Possibly|Unknown :
          ;7. Fall Through
          (x, y) : false
 
-   match(x) :
+   val res = match(x) :
       (x:TMixed) :
          any4?(partof?{_, y}, types(x))
       (x) :
          match(partial-st?(x, y)) :
             (r:False) : subtype?(x, y)
             (r) : r
+   stop(passable-timer)
+   res
 
 defn passable? (x:LSType, y:LSType) -> True|False|Possibly|Unknown :
    match(x, y) :
@@ -892,9 +934,10 @@ defn erase (t:Type) -> Type :
       (t) : fatal("Invalid type to erase: %~" % [t])
 
 defn disjoint? (x:Type, y:Type, u:Type) :
+   start(disjoint-timer)
    defn ps! (x:Type, y:Type) :
       passable?(x, y) == true
-   match(u) :
+   val res = match(u) :
       (u:TOr|TAnd) :
          disjoint?(x, y, a(u)) and disjoint?(x, y, b(u))
       (u) :
@@ -903,12 +946,17 @@ defn disjoint? (x:Type, y:Type, u:Type) :
          val eu = erase(u)         
          if overlap?(ex, ey) == true : false
          else : not (ps!(eu, ex) and ps!(eu, ey))
+   stop(disjoint-timer)
+   res
 
 defn disjoint? (x:LSType, y:LSType, u:False|LSType) :
-   match(x, y, u) :
+   start(disjoint-timer)
+   val res = match(x, y, u) :
       (x:RefT, y:RefT, u:RefT) : disjoint?(type(x), type(y), type(u))
       (x:RefT, y:RefT, u) : disjoint?(type(x), type(y), TGradual())
       (x, y, u) : false
+   stop(disjoint-timer)
+   res
       
 public defn disjoint-fns? (x:TArrow, y:TArrow, u:Type) :      
    defn disjoint-a1? (x:TTuple, y:TTuple, u:Type) :
@@ -953,7 +1001,8 @@ public defn submethod? (x:TArrow, y:TArrow) -> True|False|Unknown :
 
 ;====== LoStanza Subtyping ======
 public defn subtype? (x:LSType, y:LSType) -> True|False|Unknown :
-   match(x, y) :
+   start(subtype-timer)
+   val res = match(x, y) :
       ;3. Unknown Type Fast Path
       (x:UnknownT, y) : true
       (x, y:UnknownT) : true
@@ -980,20 +1029,25 @@ public defn subtype? (x:LSType, y:LSType) -> True|False|Unknown :
        y:PtrT|RefT|FnT|StructT|ByteT|IntT|LongT|FloatT|DoubleT|RestT) : false
       ;6. Error 
       (x, y) : fatal("Cannot compute subtype?(%~, %~)" % [x, y])
+   stop(subtype-timer)
+   res
 
 public defn subtype? (a1:List<LSType>, r1:False|LSType, 
                       a2:List<LSType>, r2:False|LSType) -> True|False|Unknown :
+   start(subtype-timer)
    defn ex (ts:List<LSType>, r:LSType) : cat(ts, repeat(r))
    defn ap (ts:List<LSType>, r:LSType) : cat(ts, [r])
    val n1 = length(a1)
    val n2 = length(a2)
-   match(r1, r2) :
+   val res = match(r1, r2) :
       (r1:False, r2:False) : all3?(subtype?, a1, a2) when n1 == n2
       (r1:False, r2:LSType) : all3?(subtype?, a1, ex(a2,r2)) when n1 >= n2
       (r1:LSType, r2:False) : all3?(subtype?, ex(a1,r1), a2) when n1 <= n2
       (r1:LSType, r2:LSType) :
          if n1 <= n2 : all3?(subtype?, ex(a1,r1), ap(a2,r2))
          else : all3?(subtype?, ap(a1,r1), ex(a2,r2))
+   stop(subtype-timer)
+   res
          
 ;;====== LoStanza Castable ======
 public defn primitive-size (t:LSType) :
