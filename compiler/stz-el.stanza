@@ -81,6 +81,10 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Within Package Inline", within-package-inline, "wp-inlined", false)
   if optimize? :
     run-pass("Remove Reified Types", force-remove-types, "removed-types", true)
+
+  run-pass("Analyze Free Vars", analyze-all-freevars, "afv", false)
+  spit("out0.txt", cur-package)
+
   run-pass("Lambda Lift", lambda-lift, "lambda", true)
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
@@ -1092,6 +1096,11 @@ defn box-mutables (epackage:EPackage, gvt:VarTable) -> EPackage :
   ;Perform freevar analysis and then boxing
   within (texp, vt) = map-with-var-table(gvt, epackage) :
     box(analyze-freevars(texp, vt), vt) as ETExp
+
+
+defn analyze-all-freevars (epackage:EPackage, gvt:VarTable) -> EPackage :
+  within (texp, vt) = map-with-var-table(gvt, epackage) :
+    analyze-freevars(texp, vt) as ETExp
 
 ;============================================================
 ;=================== Detect Loops ===========================

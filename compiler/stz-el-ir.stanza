@@ -525,7 +525,7 @@ defmethod print (o:OutputStream, e:EDefTypeObject) :
 defmethod print (o:OutputStream, f:EFn) :
   val tagstr = "fn*" when tail?(f) else "fn"
   defn astr (x:Int,t:EType) : "V%_:%_" % [x,t]  
-  print(o, "%_<%,> (%,) -> %_ :%_" % [tagstr, seq(ETVar,targs(f)), seq(astr, args(f), a1(f)), a2(f), body(f)])
+  print(o, "%_<%,> (%,) -> %_ %_:%_" % [tagstr, seq(ETVar,targs(f)), seq(astr, args(f), a1(f)), a2(f), free?(f), body(f)])
 
 defmethod print (o:OutputStream, b:EBody) :
   bprint(o, cat-all $ [locals(b), localfns(b), localobjs(b), ins(b)])
