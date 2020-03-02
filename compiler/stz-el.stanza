@@ -1,6 +1,7 @@
 defpackage stz/el :
   import core
   import collections
+  import stz/ids
   import stz/dl-ir
   import stz/el-ir
   import stz/utils
@@ -63,6 +64,22 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   defn run-pass (pass-name:String, f:(EPackage, EHier, VarTable) -> EPackage, suffix:String, update-tables?:True|False) :
     run-pass(pass-name, f{_, ehier, global-vt}, suffix, update-tables?)
 
+  val labeled-scope-id = ValId(`core, `LabeledScope)
+  val labeled-scope*-id = ValId(`core, `LabeledScope*)
+
+  defn match-id? (x:RecId, y:RecId) -> True|False :
+    package(x) == package(y) and name(x) == name(y)
+
+  defn find-id (i:ValId) -> False|Int :
+    label<False|Int> return :
+      for e in exports(packageio(epackage)) do :
+        val rec = rec(e)
+        match(rec:FnRec) : return(n(e)) when match-id?(id(rec), i)
+      false
+      
+  val labeled-scope-defn-id  = find-id(labeled-scope-id) as Int
+  val labeled-scope*-defn-id = find-id(labeled-scope*-id) as Int
+
   ;Dump input
   ;dump(cur-package, "logs", "input")
   run-pass("Map Methods", map-methods, "mapped-methods", false)
@@ -82,7 +99,8 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   if optimize? :
     run-pass("Remove Reified Types", force-remove-types, "removed-types", true)
 
-  run-pass("Analyze Free Vars", analyze-all-freevars, "afv", false)
+  run-pass("Inline Labels", inline-labels{_, _, labeled-scope-defn-id, labeled-scope*-defn-id}, "inline labels", false)
+
   spit("out0.txt", cur-package)
 
   run-pass("Lambda Lift", lambda-lift, "lambda", true)
@@ -1097,10 +1115,140 @@ defn box-mutables (epackage:EPackage, gvt:VarTable) -> EPackage :
   within (texp, vt) = map-with-var-table(gvt, epackage) :
     box(analyze-freevars(texp, vt), vt) as ETExp
 
+defstruct LabelInfo :
+  body-fn-id : Int
+  return-var : Int
+  local-fn : False|ELocalFn with: (setter => set-local-fn, init => false)
+  return-label : False|Int with: (setter => set-return-label, init => false)
+  return-vars : Vector<Int> with: (init => Vector<Int>())
 
-defn analyze-all-freevars (epackage:EPackage, gvt:VarTable) -> EPackage :
+defn inline-labels (epackage:EPackage, gvt:VarTable, labeled-scope-defn-id:Int, labeled-scope*-defn-id:Int) -> EPackage :
+
+  defn replace-returns (body:EBody, info:LabelInfo) -> EBody :
+    set-return-label(info, fresh-id())
+    val new-ins = Vector<EIns>()
+    for i in ins(body) do :
+      match(i) :
+        (e:ECall) :
+          match(f(e)) :
+            (f:EVar) :
+              if contains?(return-vars(info), n(f)) :
+                add(new-ins, EDef(EVarLoc(return-var(info) as Int), ys(e)[0]))
+                add(new-ins, EGoto(return-label(info) as Int))
+              else :
+                add(new-ins, e)
+            (f) : add(new-ins, e)
+        (e) : add(new-ins, e)
+    sub-ins(body, to-tuple $ new-ins)
+
+  val inline-labels = IntTable<LabelInfo>()
+
+  defn safe-returns? (e:EBody, return-vars:Vector<Int>) -> True|False :
+    label<True|False> return :
+      let loop (e:ELItem = e, function-of-call?:True|False = false, depth:Int = 0) :
+        match(e) :
+          (e:EDef) :
+            match(y(e)) :
+              (y:EVar) : add(return-vars, n(x(e))) when contains?(return-vars, n(y))
+              (y) : false
+          (e:EVar) :
+            if contains?(return-vars, n(e)) and (not function-of-call? or depth > 0) :
+              println("FOUND UNSAFE USE OF RETURN %_" % [e])
+              return(false)
+          (e:ECall) :
+            loop(f(e), true, depth)
+            do(loop{_, false, depth}, ys(e))
+          (e:EFn) :
+            do(loop{_, false, depth + 1}, e)
+          (e:ELive) : false
+          (e:EBody) :
+            do(loop{_, false, depth}, ins(e))
+            do(loop{_, false, depth}, localfns(e))
+          (e) :
+            do(loop{_, false, depth}, e)
+      true
+
+  defn search (t:ETExp) :
+    let loop (e:ELItem = t) :
+      match(e:EBody) : 
+        val label-info = 
+          label<False|LabelInfo> return :
+            for i in ins(e) do :
+              match(i) :
+                (i:ECall) :
+                  match(f(i)) :
+                    (f:EVar) :
+                      if n(f) == labeled-scope-defn-id :
+                        println("FOUND BODY FUNCTION %_" % [n(x(i) as EVarLoc)])
+                        return(LabelInfo(n(ys(i)[0] as EVar), n(x(i) as EVarLoc)))
+                    (f) : false
+                (i) : false
+        match(label-info) :
+          (info:LabelInfo) :
+            for lf in localfns(e) do :
+              if n(lf) == body-fn-id(info) :
+                match(func(lf)) :
+                  (e:EFn) :
+                    val return-arg = args(e)[0]
+                    add(return-vars(info), return-arg)
+                    if safe-returns?(body(e), return-vars(info)) :
+                      inline-labels[body-fn-id(info)] = info
+                      set-local-fn(info, lf)
+                  (e) : false
+          (id:False) : false
+        do(loop, localfns(e))
+      else :
+        do(loop, e)
+
+  defn get-inlined-function (i:ECall|ETCall, fid:Int, arity:Int) -> False|LabelInfo :
+    if fid == labeled-scope-defn-id :
+      get?(inline-labels, n(ys(i)[0] as EVar))
+      
+  defn inline (e:ELBigItem) :
+    match(e:EBody) :
+      val buffer = BodyBuffer(e)
+      for l in localfns(e) do :
+        if not key?(inline-labels, n(l)) :
+          emit(buffer, inline(l) as ELocalFn)
+      for o in localobjs(e) do :
+        emit(buffer, inline(o) as ELocalObj)
+      for i in ins(e) do :
+        match(i) :
+          (i:ECall) :
+            val f* = deconstruct-function(f(i))
+            if empty?(f*) :
+              emit(buffer, i)
+            else :
+              val [fid, targs] = value!(f*)
+              match(get-inlined-function(i, fid, length(ys(i)))) :
+                (info:LabelInfo) :
+                  val func  = func(local-fn(info) as ELocalFn) as EFn
+                  val func* = sub-body(func, replace-returns(body(func), info))
+                  inline-call(buffer, EVarLoc(return-var(info)), func*, [], [ELiteral(false)], false)
+                  emit(buffer, ELabel(return-label(info) as Int))
+                (_:False) :
+                  emit(buffer, i)
+          (i:EInitClosures) :
+            val xs* = for x in xs(i) filter : not key?(inline-labels, n(x))
+            if not empty?(xs*) :
+              emit(buffer, EInitClosures(to-tuple(xs*), info(i)))
+          (i) :
+            emit(buffer, i)
+      to-body(buffer, true, false, false)
+    else :
+      map(inline, e)
+
+  defn process (t:ETExp, vt:VarTable) :
+    clear(inline-labels)
+    match(t:EDefn|EDefmethod) : println("WALKING %_" % [n(t)])
+    search(t)
+    if empty?(inline-labels) :
+      t
+    else :
+      inline(t)
+
   within (texp, vt) = map-with-var-table(gvt, epackage) :
-    analyze-freevars(texp, vt) as ETExp
+    process(texp, vt) as ETExp
 
 ;============================================================
 ;=================== Detect Loops ===========================
