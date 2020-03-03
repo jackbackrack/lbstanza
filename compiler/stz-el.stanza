@@ -1115,15 +1115,35 @@ defn box-mutables (epackage:EPackage, gvt:VarTable) -> EPackage :
   within (texp, vt) = map-with-var-table(gvt, epackage) :
     box(analyze-freevars(texp, vt), vt) as ETExp
 
+;============================================================
+;====================== INLINE LABELS =======================
+;============================================================
+
+;Labels are converted into calls to LabelScope(body-fn)
+;where body-fn is fn (return) : body ...
+
+;Recorded information about a label usage.
 defstruct LabelInfo :
   body-fn-id : Int
+  ;arg var passed into label body-fun
   return-var : Int
+  ;local fun corresponding to body-fn-id
   local-fn : False|ELocalFn with: (setter => set-local-fn, init => false)
+  ;label to goto after setting return-var to return value.
   return-label : False|Int with: (setter => set-return-label, init => false)
-  return-vars : Vector<Int> with: (init => Vector<Int>())
+  ;all aliases for return-var to look for in usages of return
+  return-vars : Vector<Int> with: (init => Vector<Int>()) 
+with:
+  constructor => LabelInfo*
+
+defn LabelInfo (body-fn-id:Int, return-var:Int) -> LabelInfo :
+  val res = LabelInfo*(body-fn-id, return-var)
+  add(return-vars(res), return-var)
+  res
 
 defn inline-labels (epackage:EPackage, gvt:VarTable, labeled-scope-defn-id:Int, labeled-scope*-defn-id:Int) -> EPackage :
 
+  ;Replace all calls to returns with assignments to return var and a goto return label
   defn replace-returns (body:EBody, info:LabelInfo) -> EBody :
     set-return-label(info, fresh-id())
     val new-ins = Vector<EIns>()
@@ -1141,8 +1161,9 @@ defn inline-labels (epackage:EPackage, gvt:VarTable, labeled-scope-defn-id:Int, 
         (e) : add(new-ins, e)
     sub-ins(body, to-tuple $ new-ins)
 
-  val inline-labels = IntTable<LabelInfo>()
+  val inline-labels = IntTable<LabelInfo>() ;Recorded labels to be assigned
 
+  ;Are returns only calls in top body (depth = 0)?
   defn safe-returns? (e:EBody, return-vars:Vector<Int>) -> True|False :
     label<True|False> return :
       let loop (e:ELItem = e, function-of-call?:True|False = false, depth:Int = 0) :
@@ -1168,10 +1189,11 @@ defn inline-labels (epackage:EPackage, gvt:VarTable, labeled-scope-defn-id:Int, 
             do(loop{_, false, depth}, e)
       true
 
+  ;Find all eligible uses of label that are inlineable.
   defn search (t:ETExp) :
     let loop (e:ELItem = t) :
-      match(e:EBody) : 
-        val label-info = 
+      match(e:EBody) : ;Find potential label in body with only one label call per body possible
+        val info = 
           label<False|LabelInfo> return :
             for i in ins(e) do :
               match(i) :
@@ -1179,32 +1201,29 @@ defn inline-labels (epackage:EPackage, gvt:VarTable, labeled-scope-defn-id:Int, 
                   match(f(i)) :
                     (f:EVar) :
                       if n(f) == labeled-scope-defn-id :
+                        match(t:EDefn|EDefmethod) : print("DEFN %_: " % [n(t)])
                         println("FOUND BODY FUNCTION %_" % [n(x(i) as EVarLoc)])
                         return(LabelInfo(n(ys(i)[0] as EVar), n(x(i) as EVarLoc)))
                     (f) : false
                 (i) : false
-        match(label-info) :
-          (info:LabelInfo) :
-            for lf in localfns(e) do :
-              if n(lf) == body-fn-id(info) :
-                match(func(lf)) :
-                  (e:EFn) :
-                    val return-arg = args(e)[0]
-                    add(return-vars(info), return-arg)
-                    if safe-returns?(body(e), return-vars(info)) :
-                      inline-labels[body-fn-id(info)] = info
-                      set-local-fn(info, lf)
-                  (e) : false
-          (id:False) : false
-        do(loop, localfns(e))
+        match(info:LabelInfo) :
+          for lf in localfns(e) do :
+            if n(lf) == body-fn-id(info) :
+              match(func(lf)) :
+                (e:EFn) :
+                  if safe-returns?(body(e), return-vars(info)) :
+                    inline-labels[body-fn-id(info)] = info ;log label as inlineable
+                    set-local-fn(info, lf)
+                (e) : false
+        do(loop, localfns(e)) ;look for labels in localfns as well
       else :
         do(loop, e)
 
-  defn get-inlined-function (i:ECall|ETCall, fid:Int, arity:Int) -> False|LabelInfo :
-    if fid == labeled-scope-defn-id :
-      get?(inline-labels, n(ys(i)[0] as EVar))
-      
+  ;Actually inline all found inlineable labels -- based on simple-inline
   defn inline (e:ELBigItem) :
+    defn get-inlined-function (i:ECall|ETCall, fid:Int, arity:Int) -> False|LabelInfo :
+      if fid == labeled-scope-defn-id :
+        get?(inline-labels, n(ys(i)[0] as EVar))
     match(e:EBody) :
       val buffer = BodyBuffer(e)
       for l in localfns(e) do :
@@ -1222,6 +1241,9 @@ defn inline-labels (epackage:EPackage, gvt:VarTable, labeled-scope-defn-id:Int, 
               val [fid, targs] = value!(f*)
               match(get-inlined-function(i, fid, length(ys(i)))) :
                 (info:LabelInfo) :
+                  ;Need to replace and inline LabeledScope(body-fn(return)) call with
+                  ;inlined call to body-fn(false) where return calls in body have been replaced
+                  ;with assignments and gotos
                   val func  = func(local-fn(info) as ELocalFn) as EFn
                   val func* = sub-body(func, replace-returns(body(func), info))
                   inline-call(buffer, EVarLoc(return-var(info)), func*, [], [ELiteral(false)], false)
@@ -1240,13 +1262,12 @@ defn inline-labels (epackage:EPackage, gvt:VarTable, labeled-scope-defn-id:Int, 
 
   defn process (t:ETExp, vt:VarTable) :
     clear(inline-labels)
-    match(t:EDefn|EDefmethod) : println("WALKING %_" % [n(t)])
     search(t)
     if empty?(inline-labels) :
       t
     else :
       inline(t)
-
+  
   within (texp, vt) = map-with-var-table(gvt, epackage) :
     process(texp, vt) as ETExp
 
