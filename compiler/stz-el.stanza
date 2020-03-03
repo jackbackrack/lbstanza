@@ -2462,7 +2462,8 @@ defmethod print (o:OutputStream, e:EAnnotate) :
 defn erase (t:EType) :
   ETop() when reftype?(t) else t
 
-defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False) -> EPackage :
+;Update types in body
+defn update-local-types (e:EBody, vt:VarTable) -> EBody :
   ;Retrieve the trusted declared type of a variable
   defn var-type (v:Int, state:Table<Int,EType>, vt:VarTable) :
     if key?(state,v) :
@@ -2471,36 +2472,35 @@ defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:Int -> T
       val t = type(vt,v)
       if lostanza?(vt,v) : erase(t)
       else : t
-      
-  ;Update types in body
-  defn update-local-types (e:EBody, vt:VarTable) -> EBody :
-    val buffer = BodyBuffer(e)
-    val state = IntTable<EType>(ETop())
-    for e in ins(e) do :
-      match(e) :
-        (e:EAnnotate) : state[n(e)] = EOr(type(e), state[n(e)])
-        (e) : emit(buffer, e)
-    val locals = to-tuple $ for l in locals(e) seq :
-      ELocal(n(l), normalize(var-type(n(l), state, vt)), mutable?(l))
-    sub-locals(to-body(buffer), locals)
 
-  defn infer (f:ETExp, vt:VarTable) :
-    defn update-local-types-in-bodies (e:ELBigItem) :
-      match(map(update-local-types-in-bodies, e)) :
-        (e:EBody) : update-local-types(e, vt)
-        (e) : e
-    defn process (f:ELBigItem) :
-      match(f) :
-        (f:EDefn|EDefmethod|EInit) :
-          val res = analyze-freevars(map(process, f), vt)
-          println(">>> DEFN %_" % [n(f)])
-          res
-        (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
-        (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
-        (f) : map(process, f)
-    process(f) as ETExp
+  val buffer = BodyBuffer(e)
+  val state = IntTable<EType>(ETop())
+  for e in ins(e) do :
+    match(e) :
+      (e:EAnnotate) : state[n(e)] = EOr(type(e), state[n(e)])
+      (e) : emit(buffer, e)
+  val locals = to-tuple $ for l in locals(e) seq :
+    ELocal(n(l), normalize(var-type(n(l), state, vt)), mutable?(l))
+  sub-locals(to-body(buffer), locals)
 
-  map-with-var-table(infer, gvt, epackage, enabled?)
+defn update-types (f:ETExp, vt:VarTable) :
+  defn update-local-types-in-bodies (e:ELBigItem) :
+    match(map(update-local-types-in-bodies, e)) :
+      (e:EBody) : update-local-types(e, vt)
+      (e) : e
+  defn process (f:ELBigItem) :
+    match(f) :
+      (f:EDefn|EDefmethod|EInit) :
+        val res = analyze-freevars(map(process, f), vt)
+        println(">>> DEFN %_" % [n(f)])
+        res
+      (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
+      (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
+      (f) : map(process, f)
+  process(f) as ETExp
+
+defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False) -> EPackage :
+  map-with-var-table(update-types, gvt, epackage, enabled?)
 
 ;============================================================
 ;==================== Check Elision =========================
