@@ -1,6 +1,7 @@
 defpackage stz/el :
   import core
   import collections
+  import stz/ids
   import stz/dl-ir
   import stz/el-ir
   import stz/utils
@@ -40,7 +41,6 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;Current processing package
   var cur-package:EPackage = epackage
 
-  val fun-variants = IntTable<HashSet<Tuple<EType>>>()
 
   ;Necessary tables
   var iotable:IOTable
@@ -52,6 +52,17 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     ehier = EHier(packageio(epackage), iotable)
   update-tables()
   
+  val fun-variants = IntTable<HashTable<Tuple<EType>,Int>>()
+
+
+  defn init-fun-variants (epackage:EPackage) :
+    for e in filter-by<EDefn|EDefmethod>(exps(epackage)) do :
+      val f = func(e)
+      match(f:EFn) :
+        val tab = HashTable<Tuple<EType>,Int>()
+        tab[a1(f)] = n(e)
+        fun-variants[n(e)] = tab
+
   ;Run pass
   defn run-pass (pass-name:String, f:EPackage -> EPackage, suffix:String, update-tables?:True|False) :
     within time-ms!(pass-name) :
@@ -88,6 +99,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
     spit("out0.txt", cur-package)
+    init-fun-variants(cur-package)
     run-pass("Specialize", specialize{_, _, fun-variants}, "specialize", false)
     for kv in fun-variants do :
       if length(value(kv)) > 1 :
@@ -2088,6 +2100,10 @@ defmethod print (o:OutputStream, e:EAnnotate) :
 defn erase (t:EType) :
   ETop() when reftype?(t) else t
 
+;============================================================
+;=============== UPDATE-TYPE-ANNOTATIONS ====================
+;============================================================
+
 defn add-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
   defn infer (f:ETExp, vt:VarTable) :
     val result = let loop (f:ELBigItem = analyze-freevars(f,vt)) :
@@ -2098,6 +2114,46 @@ defn add-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
     result as ETExp
   map-with-var-table(infer, gvt, epackage)
 
+;Update types in body
+defn update-local-types (e:EBody, vt:VarTable) -> EBody :
+  ;Retrieve the trusted declared type of a variable
+  defn var-type (v:Int, state:Table<Int,EType>, vt:VarTable) :
+    if key?(state,v) :
+      state[v]
+    else :
+      val t = type(vt,v)
+      if lostanza?(vt,v) : erase(t)
+      else : t
+
+  val buffer = BodyBuffer(e)
+  val state = IntTable<EType>(ETop())
+  for e in ins(e) do :
+    match(e) :
+      (e:EAnnotate) : state[n(e)] = EOr(type(e), state[n(e)])
+      (e) : emit(buffer, e)
+  val locals = to-tuple $ for l in locals(e) seq :
+    ELocal(n(l), normalize(var-type(n(l), state, vt)), mutable?(l))
+  sub-locals(to-body(buffer), locals)
+
+defn update-type-annotations (f:ETExp, vt:VarTable) :
+  defn update-local-types-in-bodies (e:ELBigItem) :
+    match(map(update-local-types-in-bodies, e)) :
+      (e:EBody) : update-local-types(e, vt)
+      (e) : e
+  defn process (f:ELBigItem) :
+    match(f) :
+      (f:EDefn|EDefmethod) :
+        val res = analyze-freevars(map(process, f), vt)
+        println(">>> DEFN %_" % [n(f)])
+        res
+      (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
+      (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
+      (f) : map(process, f)
+  process(f) as ETExp
+
+defn update-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
+  map-with-var-table(update-type-annotations, gvt, epackage)
+  
 ;============================================================
 ;==================== Check Elision =========================
 ;============================================================
@@ -2337,8 +2393,23 @@ defn MethodTable (epackage:EPackage) :
   ;Launch
   driver()
 
-defn specialize (epackage:EPackage, gvt:VarTable, fun-variants:IntTable<HashSet<Tuple<EType>>>) -> EPackage :
-  val fn-ids = to-intset $ seq(n, filter-by<EDefn|EDefmethod>(exps(epackage)))
+defn specialize (epackage:EPackage, gvt:VarTable, fun-variants:IntTable<HashTable<Tuple<EType>,Int>>) -> EPackage :
+
+  val fns = to-inttable<EDefn|EDefmethod> $ for e in filter-by<EDefn|EDefmethod>(exps(epackage)) seq : n(e) => e
+
+  defn copy-def (fid:Int, types:Tuple<EType>) -> EDefn|EDefmethod :
+    val et = fns[fid]
+    match(func(et)) :
+      (ef:EFn) :
+        val id = fresh-id()
+        println("ADDING %_" % [id])
+        val res = sub-n(sub-func(et, sub-a1(ef, types)), id)
+        ; update-type-annotations(res, vt) as EDefn|EDefmethod
+        res
+      (ef) : et
+
+  val new-variants = Vector<ETExp>()
+
   defn spec (e:EBody, vt:VarTable) -> EBody :
     val ins* = for i in ins(e) map :
       ;Resolve target of call
@@ -2352,10 +2423,16 @@ defn specialize (epackage:EPackage, gvt:VarTable, fun-variants:IntTable<HashSet<
             (f:EVar) : EVar(n)
             (f:ECurry) : ECurry(EVar(n), targs(f))
         match(fid:Int) :
-          if fn-ids[fid] :
+          val variants = get?(fun-variants, fid)
+          match(variants:HashTable<Tuple<EType>,Int>) :
             val ys-types = map(type{vt, _}, ys)
-            val variants = set?(fun-variants, fid, { HashSet<Tuple<EType>>() })
-            add(variants, ys-types)
+            match(get?(variants, ys-types)) :
+              (f:False) :
+                val copy = copy-def(fid, ys-types)
+                add(new-variants, copy)
+                variants[ys-types] = n(copy)
+                sub-fid(n(copy))
+              (f:Int) : false
             ; match(resolve-target(method-table, fid, ys-types)) :
             ;   (n:Int) : sub-fid(n)
             ;   (n:False) : false
@@ -2375,8 +2452,11 @@ defn specialize (epackage:EPackage, gvt:VarTable, fun-variants:IntTable<HashSet<
         (e:EBody) : spec(e,vt)
         (e) : e
     result as ETExp
-  map-with-var-table(resolve-texp, gvt, epackage)
-  
+  val res0 = map-with-var-table(resolve-texp, gvt, epackage)
+  println("ADDING %_ VARIANTS" % [length(new-variants)])
+  val res = sub-exps(res0, to-tuple $ cat(exps(res0), new-variants))
+  spit("out1.txt", res)
+  res
 
 defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
   val method-table = MethodTable(epackage)
