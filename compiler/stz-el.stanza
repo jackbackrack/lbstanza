@@ -97,7 +97,6 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
     spit("out0.txt", cur-package)
-    run-pass("Elide Checks", elide-checks, "elided", false)
     init-fun-variants(cur-package)
     run-pass("Specialize", specialize{_, _, fun-variants}, "specialize", true)
     for kv in fun-variants do :
@@ -105,7 +104,6 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
         println("%_ -> %_" % [key(kv), length(value(kv))])
         for t in value(kv) do :
           println("  %_" % [t])
-    run-pass("Elide Checks", elide-checks, "elided", false)
     run-pass("Update Type Annotations", update-type-annotations, "update-type-annotations", false)
   run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
@@ -1897,6 +1895,8 @@ defn annotate-body-instructions (e:EBody, state0:Table<Int,EType>, vt:VarTable) 
       (i:EConv) : untrusted(x(i))
       (i:EPrim) : trusted(x(i))
       (i:ENewObject) : trusted(x(i))
+      (i:EBox) : trusted(x(i))
+      (i:EBoxGet) : trusted(x(i))
       (i:ECall) :
         match(x(i)) :
           (x:EVarLoc) :
@@ -2144,16 +2144,9 @@ defn update-type-annotations (f:ETExp, vt:VarTable) :
 
   defn process (f:ELBigItem) :
     match(f) :
-      (f:EDefn|EDefmethod) :
-        println(">>> DEFN %_" % [n(f)])
-        val res = map(process, analyze-freevars(f, vt))
-        res
+      (f:EDefn|EDefmethod) : map(process, analyze-freevars(f, vt))
       (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
-      (f:EBody) :
-        for l in locals(f) do :
-          println("LOOKING UP %_" % [n(l)])
-          get(vt, n(l))
-        update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
+      (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
       (f) : map(process, f)
   process(f) as ETExp
 
