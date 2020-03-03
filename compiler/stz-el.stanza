@@ -53,7 +53,6 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   
   val fun-variants = IntTable<HashTable<Tuple<EType>,Int>>()
 
-
   defn init-fun-variants (epackage:EPackage) :
     for e in filter-by<EDefn|EDefmethod>(exps(epackage)) do :
       val f = func(e)
@@ -98,6 +97,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   if optimize? :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
     spit("out0.txt", cur-package)
+    run-pass("Elide Checks", elide-checks, "elided", false)
     init-fun-variants(cur-package)
     run-pass("Specialize", specialize{_, _, fun-variants}, "specialize", true)
     for kv in fun-variants do :
@@ -105,6 +105,8 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
         println("%_ -> %_" % [key(kv), length(value(kv))])
         for t in value(kv) do :
           println("  %_" % [t])
+    run-pass("Elide Checks", elide-checks, "elided", false)
+    run-pass("Update Type Annotations", update-type-annotations, "update-type-annotations", false)
   run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
@@ -2113,40 +2115,45 @@ defn add-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
     result as ETExp
   map-with-var-table(infer, gvt, epackage)
 
-;Update types in body
-defn update-local-types (e:EBody, vt:VarTable) -> EBody :
-  ;Retrieve the trusted declared type of a variable
-  defn var-type (v:Int, state:Table<Int,EType>, vt:VarTable) :
-    if key?(state,v) :
-      state[v]
-    else :
-      val t = type(vt,v)
-      if lostanza?(vt,v) : erase(t)
-      else : t
-
-  val buffer = BodyBuffer(e)
-  val state = IntTable<EType>(ETop())
-  for e in ins(e) do :
-    match(e) :
-      (e:EAnnotate) : state[n(e)] = EOr(type(e), state[n(e)])
-      (e) : emit(buffer, e)
-  val locals = to-tuple $ for l in locals(e) seq :
-    ELocal(n(l), normalize(var-type(n(l), state, vt)), mutable?(l))
-  sub-locals(to-body(buffer), locals)
-
 defn update-type-annotations (f:ETExp, vt:VarTable) :
+  ;Update types in body
+  defn update-local-types (e:EBody, vt:VarTable) -> EBody :
+    ;Retrieve the trusted declared type of a variable
+    defn var-type (v:Int, state:Table<Int,EType>, vt:VarTable) :
+      if key?(state,v) :
+        state[v]
+      else :
+        val t = type(vt,v)
+        if lostanza?(vt,v) : erase(t)
+        else : t
+
+    val buffer = BodyBuffer(e)
+    val state = IntTable<EType>(ETop())
+    for e in ins(e) do :
+      match(e) :
+        (e:EAnnotate) : state[n(e)] = EOr(type(e), state[n(e)])
+        (e) : emit(buffer, e)
+    val locals = to-tuple $ for l in locals(e) seq :
+      ELocal(n(l), normalize(var-type(n(l), state, vt)), mutable?(l))
+    sub-locals(to-body(buffer), locals)
+
   defn update-local-types-in-bodies (e:ELBigItem) :
     match(map(update-local-types-in-bodies, e)) :
       (e:EBody) : update-local-types(e, vt)
       (e) : e
+
   defn process (f:ELBigItem) :
     match(f) :
       (f:EDefn|EDefmethod) :
-        val res = analyze-freevars(map(process, f), vt)
         println(">>> DEFN %_" % [n(f)])
+        val res = map(process, analyze-freevars(f, vt))
         res
       (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
-      (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
+      (f:EBody) :
+        for l in locals(f) do :
+          println("LOOKING UP %_" % [n(l)])
+          get(vt, n(l))
+        update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
       (f) : map(process, f)
   process(f) as ETExp
 
@@ -2840,6 +2847,7 @@ with:
 deftype VarTable
 defmulti get (e:VarTable, n:Int) -> VTRecord
 defmulti iotable (e:VarTable) -> IOTable
+defmulti records (e:VarTable) -> Seqable<VTRecord>
 defn VarTable (records:Seqable<VTRecord>, iotable:IOTable, parent:VarTable|False) :
   ;Initialize table, convert varentry if necessary
   val table = to-inttable<VTRecord> $
@@ -2860,11 +2868,15 @@ defn VarTable (records:Seqable<VTRecord>, iotable:IOTable, parent:VarTable|False
         (r:False, p:False) : fatal("No entry for %_" % [n])
     defmethod iotable (this) :
       iotable
+    defmethod records (this) :
+      values(table)
 
 defstruct VTRecord :
   global?: True|False
   n: Int
   entry: FnEntry|VarEntry with: (updater => sub-entry)
+with:
+  printer => true
 
 ;Convenience Functions
 defn function? (vt:VarTable, n:Int) :
