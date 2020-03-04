@@ -6324,6 +6324,13 @@ defmethod do<?T> (f: T -> ?, xs:Array<?T>) :
          f(xs[i])
          loop(i + 1)
 
+defmethod do<?T> (f: T -> ?, xs:Tuple<?T>) :
+   val n = length(xs)
+   let loop (i:Int = 0) :
+      if i < n :
+         f(xs[i])
+         loop(i + 1)
+
 #for (Prim in [Byte Int Long Float Double]
       PrimArray in [ByteArray IntArray LongArray FloatArray DoubleArray]) :
   defmethod do (f: Prim -> ?, xs:PrimArray) :
