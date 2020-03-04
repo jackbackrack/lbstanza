@@ -98,6 +98,17 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
 
   println("INLINEABLE %_" % [to-tuple $ inlineables])
 
+  val fun-variants = IntTable<HashTable<Tuple<EType>,Int>>()
+
+  defn init-fun-variants (epackage:EPackage) :
+    for e in filter-by<EDefn|EDefmethod>(exps(epackage)) do :
+      val f = func(e)
+      match(f:EFn) :
+        if not inlineables[n(e)] :
+          val tab = HashTable<Tuple<EType>,Int>()
+          tab[a1(f)] = n(e)
+          fun-variants[n(e)] = tab
+
   val no-inlineables = IntSet()
 
   ;Dump input
@@ -129,11 +140,16 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
     ;spit("out0.txt", cur-package)
     run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
-    let loop (i:Int = 1, n:Int = 7, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
+    ; init-fun-variants(cur-package)
+    update-tables()
+    let loop (i:Int = 1, n:Int = 10, enabled?:IntSet = changed0?, changed?:IntSet = changed1?) :
       if n > 0 :
         within time-ms!(string-join $ ["LOOP" i]) :
           println("--- LOOP %_ --- %_ ENABLED?" % [i, to-tuple $ enabled?])
           clear(changed?)
+          ; run-pass("Specialize", specialize{_, _, { enabled?[_] }, changed?, fun-variants}, "specialize", true)
+          ; spit("out0.txt", cur-package)
+          ; run-pass("Update Type Annotations", update-type-annotations{_, _, { changed?[_] }}, "update-type-annotations", false)
           run-pass("Resolve Methods", resolve-methods{_, _, method-table, { enabled?[_] }, changed?}, "resolved-methods", false)
           ;println("RESOLVED METHODS IN %_" % [to-tuple $ changed?])
           run-pass("Within Package Inline", within-package-inline{_, inlineables, { enabled?[_] }, changed?}, "wp-inlined", false)
@@ -157,6 +173,11 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           add-all(changed?, changed2?)
         loop(i + 1, n - 1, changed?, enabled?) when not empty?(changed?)
   ;; ;; run-pass("Within Package Top Inline", within-package-top-inline, "wp-top-inlined", false)
+  for kv in fun-variants do :
+    if length(value(kv)) > 1 :
+      println("%_ -> %_" % [key(kv), length(value(kv))])
+      for t in value(kv) do :
+        println("  %_" % [t])
   run-pass("Resolve Matches Covereage", resolve-matches-coverage, "resolved-matches-coverage", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
@@ -164,7 +185,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   ;;   run-pass("Common Subexpression Elimination", common-subexpression-elimination, "common-subexpression-elimination", false)
   ;;   spit("out3.txt", cur-package)
 
-  ;if optimize? : spit("out.txt", cur-package)
+  if optimize? : spit("out.txt", cur-package)
 
   ;Return processed package
   stop(lower-timer)
@@ -2491,8 +2512,8 @@ defn update-types (f:ETExp, vt:VarTable) :
   defn process (f:ELBigItem) :
     match(f) :
       (f:EDefn|EDefmethod|EInit) :
-        val res = analyze-freevars(map(process, f), vt)
-        println(">>> DEFN %_" % [n(f)])
+        ;println(">>> DEFN %_" % [n(f)])
+        val res = map(process, analyze-freevars(f, vt))
         res
       (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
       (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
@@ -2728,12 +2749,12 @@ defn MethodTable (epackage:EPackage, class-tree:DynTree) :
     match(mdag:MethodDag) :
       val args = map(etype-to-arg{class-tree, _, false}, types)
       val solns = all-solns(dag(mdag), args, false)
-      ;; println("FOUND %_ -> %_ / %_" % [args, solns, targets(mdag)])
+      println("FOUND %_ -> %_ / %_" % [args, solns, targets(mdag)])
       if length(solns) == 1 :
         val i = index(solns[0] as UniqueSoln)
         targets(mdag)[i]
-      ;; else :
-      ;;   println("AMBIGUOUS %_" % [mdag])
+      else :
+        println("AMBIGUOUS %_" % [mdag])
 
   ;Build the Method Table
   defn build-method-table (class-tree:DynTree, dag-table:IntTable<MethodDag>) :
@@ -2759,10 +2780,10 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable,
             (f:ECurry) : ECurry(EVar(n), targs(f))
         match(fid:Int) :
           val ys-types = map(type{vt, _}, ys)
-          ;; print("RESOLVING %_%_ " % [fid, ys-types])
+          print("RESOLVING %_%_ " % [fid, ys-types])
           match(resolve-target(method-table, fid, ys-types)) :
             (n:Int) :
-              match(top:Int) : (add(changed?, top)) ;println("RESOLVING %_%_ -> %_" % [fid, ys-types, n])
+              match(top:Int) : (println("RESOLVING %_%_ -> %_" % [fid, ys-types, n]), add(changed?, top))
               sub-fid(n)
             (n:False) :
               false 
@@ -2779,7 +2800,7 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable,
     val result = let loop (x:ELBigItem = x, top:False|Int = false) :
       match(x) :
         (e:EDefmethod|EDefn|EInit) :
-          ; println("--- DEFN %_" % [n(e)])
+          println("--- DEFN %_" % [n(e)])
           map(loop{_, n(e)}, e)
         (e:EBody) :
           resolve-in-body(e,vt,top)
@@ -2794,6 +2815,78 @@ defstruct MethodDag :
   targets: Tuple<Int>
 with:
   printer => true
+
+;============================================================
+;===================== SPECIALIZE ===========================
+;============================================================
+
+defn specialize (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False, changed?:IntSet, fun-variants:IntTable<HashTable<Tuple<EType>,Int>>) -> EPackage :
+
+  val fns = to-inttable<EDefn|EDefmethod> $ generate<KeyValue<Int,EDefn|EDefmethod>> :
+    for e in filter-by<EDefn|EDefmethod>(exps(epackage)) do :
+      yield(n(e) => e) when func(e) is EFn
+
+  val new-variants = Vector<ETExp>()
+
+  defn spec (e:EBody, vt:VarTable,top:False|Int) -> EBody :
+    val ins* = for i in ins(e) map :
+      ;Resolve target of call
+      defn spec-call (f:EImm, ys:Tuple<EImm>) -> EImm|False :
+        val fid = match(f) :
+          (f:EVar) : n(f)
+          (f:ECurry) : n(x(f))
+          (f) : false
+        defn sub-fid (n:Int) :
+          match(f) :
+            (f:EVar) : EVar(n)
+            (f:ECurry) : ECurry(EVar(n), targs(f))
+        match(fid:Int) :
+          val variants = get?(fun-variants, fid)
+          match(variants:HashTable<Tuple<EType>,Int>) :
+            val ys-types = map(type{vt, _}, ys)
+            match(get?(variants, ys-types)) :
+              (f:False) :
+                val nfid = uniqueid()
+                val et = fns[fid]
+                val ef = func(et) as EFn
+                val copy = sub-n(sub-func(et, rename-fn(sub-a1(ef, ys-types))), nfid)
+                add(new-variants, copy)
+                add(changed?, nfid)
+                variants[ys-types] = nfid
+                ; println("  CREATING NEW %_ %_" % [nfid, ys-types])
+                sub-fid(nfid)
+              (f:Int) :
+                ; println("  LOOKING UP FID %_ VS F %_" % [fid, f])
+                sub-fid(f) when (f != fid)
+            ; match(resolve-target(method-table, fid, ys-types)) :
+            ;   (n:Int) : sub-fid(n)
+            ;   (n:False) : false
+            
+      ;Resolve calls and tcalls
+      match(i) :
+        (i:ECall|ETCall) :
+          val f* = spec-call(f(i), ys(i))
+          match(f*:EImm) : ((match(top:Int) : add(changed?, top)), sub-f(i, f*))
+          else : i
+        (i) : i
+    sub-ins(e, ins*)
+
+  defn resolve-texp (x:ETExp, vt:VarTable) :
+    val result = let loop (x:ELBigItem = x, top:False|Int = false) :
+      match(x) :
+        (e:EDefmethod|EDefn) :
+          map(loop{_, n(e)}, e)
+        (e:EBody) :
+          spec(e,vt,top)
+        (e) :
+          map(loop{_, top}, e)
+    result as ETExp
+
+  val res0 = map-with-var-table(resolve-texp, gvt, epackage, enabled?)
+  println("ADDING %_ VARIANTS" % [length(new-variants)])
+  val res = sub-exps(res0, to-tuple $ cat(exps(res0), new-variants))
+  spit("out1.txt", res)
+  res
 
 ;============================================================
 ;===================== SHRINK IFS ===========================
