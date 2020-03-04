@@ -98,13 +98,14 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
     spit("out0.txt", cur-package)
     init-fun-variants(cur-package)
-    run-pass("Specialize", specialize{_, _, fun-variants}, "specialize", true)
+    val changed? = IntSet()
+    run-pass("Specialize", specialize{_, _, { true }, changed?, fun-variants}, "specialize", true)
     for kv in fun-variants do :
       if length(value(kv)) > 1 :
         println("%_ -> %_" % [key(kv), length(value(kv))])
         for t in value(kv) do :
           println("  %_" % [t])
-    run-pass("Update Type Annotations", update-type-annotations, "update-type-annotations", false)
+    run-pass("Update Type Annotations", update-type-annotations{_, _, changed?}, "update-type-annotations", false)
   run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
@@ -2150,8 +2151,8 @@ defn update-type-annotations (f:ETExp, vt:VarTable) :
       (f) : map(process, f)
   process(f) as ETExp
 
-defn update-type-annotations (epackage:EPackage, gvt:VarTable) -> EPackage :
-  map-with-var-table(update-type-annotations, gvt, epackage)
+defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:IntSet) -> EPackage :
+  map-with-var-table(update-type-annotations, gvt, epackage, enabled?)
   
 ;============================================================
 ;==================== Check Elision =========================
@@ -2392,7 +2393,7 @@ defn MethodTable (epackage:EPackage) :
   ;Launch
   driver()
 
-defn specialize (epackage:EPackage, gvt:VarTable, fun-variants:IntTable<HashTable<Tuple<EType>,Int>>) -> EPackage :
+defn specialize (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False, changed?:IntSet, fun-variants:IntTable<HashTable<Tuple<EType>,Int>>) -> EPackage :
 
   val fns = to-inttable<EDefn|EDefmethod> $ generate<KeyValue<Int,EDefn|EDefmethod>> :
     for e in filter-by<EDefn|EDefmethod>(exps(epackage)) do :
@@ -2437,7 +2438,7 @@ defn specialize (epackage:EPackage, gvt:VarTable, fun-variants:IntTable<HashTabl
       match(i) :
         (i:ECall|ETCall) :
           val f* = spec-call(f(i), ys(i))
-          match(f*:EImm) : sub-f(i, f*)
+          match(f*:EImm) : (maybe-changed(changed?, top), sub-f(i, f*))
           else : i
         (i) : i
     sub-ins(e, ins*)
@@ -2448,7 +2449,7 @@ defn specialize (epackage:EPackage, gvt:VarTable, fun-variants:IntTable<HashTabl
         (e:EBody) : spec(e,vt)
         (e) : e
     result as ETExp
-  val res0 = map-with-var-table(resolve-texp, gvt, epackage)
+  val res0 = map-with-var-table(resolve-texp, gvt, epackage, enabled?)
   println("ADDING %_ VARIANTS" % [length(new-variants)])
   val res = sub-exps(res0, to-tuple $ cat(exps(res0), new-variants))
   spit("out1.txt", res)
