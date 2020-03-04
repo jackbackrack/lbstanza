@@ -2152,7 +2152,7 @@ defn update-type-annotations (f:ETExp, vt:VarTable) :
   process(f) as ETExp
 
 defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:IntSet) -> EPackage :
-  map-with-var-table(update-type-annotations, gvt, epackage, enabled?)
+  map-with-var-table(update-type-annotations, gvt, epackage, { enabled?[_] })
   
 ;============================================================
 ;==================== Check Elision =========================
@@ -2401,7 +2401,7 @@ defn specialize (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False, ch
 
   val new-variants = Vector<ETExp>()
 
-  defn spec (e:EBody, vt:VarTable) -> EBody :
+  defn spec (e:EBody, vt:VarTable,top:False|Int) -> EBody :
     val ins* = for i in ins(e) map :
       ;Resolve target of call
       defn spec-call (f:EImm, ys:Tuple<EImm>) -> EImm|False :
@@ -2438,17 +2438,22 @@ defn specialize (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False, ch
       match(i) :
         (i:ECall|ETCall) :
           val f* = spec-call(f(i), ys(i))
-          match(f*:EImm) : (maybe-changed(changed?, top), sub-f(i, f*))
+          match(f*:EImm) : ((match(top:Int) : add(changed?, top)), sub-f(i, f*))
           else : i
         (i) : i
     sub-ins(e, ins*)
+
   defn resolve-texp (x:ETExp, vt:VarTable) :
-    ; match(x:EDefmethod|EDefn) : println("--- DEFN %_" % [n(x)])
-    val result = let loop (x:ELBigItem = x) :
-      match(map(loop, x)) :
-        (e:EBody) : spec(e,vt)
-        (e) : e
+    val result = let loop (x:ELBigItem = x, top:False|Int = false) :
+      match(x) :
+        (e:EDefmethod|EDefn) :
+          map(loop{_, n(e)}, e)
+        (e:EBody) :
+          spec(e,vt,top)
+        (e) :
+          map(loop{_, top}, e)
     result as ETExp
+
   val res0 = map-with-var-table(resolve-texp, gvt, epackage, enabled?)
   println("ADDING %_ VARIANTS" % [length(new-variants)])
   val res = sub-exps(res0, to-tuple $ cat(exps(res0), new-variants))
@@ -3077,7 +3082,7 @@ defn map-with-var-table (f:(ETExp, VarTable) -> ETExp, gvt:VarTable, epackage:EP
 
 defn map-with-var-table (f:(ETExp, VarTable) -> ETExp, gvt:VarTable, epackage:EPackage, enabled?:Int -> True|False) :
   val exps* = for e in exps(epackage) map :
-    match(e:EInit|EDefn|EDefmethod) :
+    match(e:EDefn|EDefmethod) :
       f(e, LocalVarTable(gvt, e)) when enabled?(n(e)) else e
     else : e
   sub-exps(epackage, exps*)
