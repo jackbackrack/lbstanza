@@ -3075,6 +3075,13 @@ defn map-with-var-table (f:(ETExp, VarTable) -> ETExp, gvt:VarTable, epackage:EP
     f(e, LocalVarTable(gvt, e))
   sub-exps(epackage, exps*)
 
+defn map-with-var-table (f:(ETExp, VarTable) -> ETExp, gvt:VarTable, epackage:EPackage, enabled?:Int -> True|False) :
+  val exps* = for e in exps(epackage) map :
+    match(e:EInit|EDefn|EDefmethod) :
+      f(e, LocalVarTable(gvt, e)) when enabled?(n(e)) else e
+    else : e
+  sub-exps(epackage, exps*)
+
 ;Rename all variables and type variables
 defn rename-vars+tvars<?T> (e:ELItem&?T, table:IntTable<Int>) -> T :
   defn rename (e:ELItem) :
