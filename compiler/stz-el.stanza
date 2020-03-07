@@ -84,7 +84,9 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
   run-pass("Lambda Lift", lambda-lift, "lambda", true)
   run-pass("Lift Objects", lift-objects, "objlifted", true)
   if optimize? :
-    run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
+    for i in 0 to 2 do :
+      run-pass("Resolve Methods", resolve-methods, "resolved-methods", false)
+      run-pass("Within Package Inline", within-package-inline, "wp-inlined", false)
   run-pass("Resolve Matches", resolve-matches, "resolved-matches", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
@@ -2328,10 +2330,11 @@ defn MethodTable (epackage:EPackage) :
   ;Launch
   driver()
 
-defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
-  val method-table = MethodTable(epackage)
-  defn resolve-in-body (e:EBody, vt:VarTable) -> EBody :
-    val ins* = for i in ins(e) map :
+defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable) -> EPackage :
+  defn resolve-in-body (e:EBody, vt:VarTable, top:False|Int) -> EBody :
+    val buffer = BodyBuffer(e)
+    val state = IntTable<EType>()
+    for i in ins(e) do :
       ;Resolve target of call
       defn resolve-call (f:EImm, ys:Tuple<EImm>) -> EImm|False :
         val fid = match(f) :
@@ -2345,23 +2348,41 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable) -> EPackage :
         match(fid:Int) :
           val ys-types = map(type{vt, _}, ys)
           match(resolve-target(method-table, fid, ys-types)) :
-            (n:Int) : sub-fid(n)
-            (n:False) : false
+            (n:Int) :
+              sub-fid(n)
+            (n:False) :
+              false 
             
       ;Resolve calls and tcalls
-      match(i) :
-        (i:ECall|ETCall) :
-          val f* = resolve-call(f(i), ys(i))
-          match(f*:EImm) : sub-f(i, f*)
-          else : i
-        (i) : i
-    sub-ins(e, ins*)
+      match(i:EAnnotate) :
+        state[n(i)] = type(i)
+      else :
+        val ni = match(i) :
+          (i:ECall|ETCall) :
+            val f* = resolve-call(f(i), ys(i))
+            match(f*:EImm) : sub-f(i, f*) else : i
+        emit(buffer, ni)
+
+    to-body(buffer)
+
   defn resolve-texp (x:ETExp, vt:VarTable) :
-    val result = let loop (x:ELBigItem = x) :
-      match(map(loop, x)) :
-        (e:EBody) : resolve-in-body(e,vt)
+    val top = match(x:EDefmethod|EDefn|EInit) : n(x)
+
+    ;Resolve methods in all bodies
+    defn resolve-methods-in-bodies (e:ELBigItem) :
+      match(map(resolve-methods-in-bodies, e)) :
+        (e:EBody) : resolve-in-body(e, vt, top)
         (e) : e
-    result as ETExp
+
+    ;Annotate and process
+    defn process (e:ELBigItem) :
+      match(e) :
+        (e:EFn) : resolve-methods-in-bodies(annotate-function(e, IntTable<EType>(), vt))
+        (e:EBody) : resolve-methods-in-bodies(annotate-body(e, IntTable<EType>(), vt))
+        (e) : map(process, e)
+    ;Compute free variables and then process
+    process(analyze-freevars(x,vt)) as ETExp
+
   map-with-var-table(resolve-texp, gvt, epackage)
 
 defstruct MethodDag :
