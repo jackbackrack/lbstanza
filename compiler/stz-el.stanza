@@ -156,7 +156,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     val changed2? = IntSet()
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
     spit("out0.txt", cur-package)
-    ;run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
+    run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
     init-fun-variants(cur-package)
     update-tables()
     init-defstruct-table(cur-package)
@@ -176,7 +176,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           run-pass("Within Package Inline", within-package-inline{_, inlineables, run?, changed?}, "wp-inlined", false)
           ;println("INLINED METHODS IN %_" % [to-tuple $ changed?])
           ;spit(to-string("out-il-%_.txt" % [i]), cur-package)
-          ;run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed?[_] }}, "eliminate-dead-code", false)
+          run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed?[_] }}, "eliminate-dead-code", false)
           ;spit(to-string("out-dc-%_.txt" % [i]), cur-package)
           clear(changed2?)
           run-pass("Shrink Ifs", shrink-ifs{_, _, run?, changed2?}, "shrink-ifs", false)
@@ -185,7 +185,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           run-pass("Constant Fold", constant-fold{_, _, _, defstruct-table, run?, changed2?}, "constant-fold", false)
           ;println("CONSTANT FOLDED IN %_" % [to-tuple $ changed2?])
           ;spit(to-string("out-cf-%_.txt" % [i]), cur-package)
-          ;run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed2?[_] }}, "eliminate-dead-code", false)
+          run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed2?[_] }}, "eliminate-dead-code", false)
           ;spit(to-string("out-ed-%_.txt" % [i]), cur-package)
           run-pass("Despecialize", despecialize{_, _, { changed?[_] }, fun-variants, new-specializations, specialized-parents}, "despecialize", true)
           ;spit(to-string("out-ds-%_.txt" % [i]), cur-package)
@@ -202,7 +202,6 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
         num-variants = num-variants + 1
         println("  %_" % [kv])
   println("NUM-VARIANTS %_" % [num-variants])
-  run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
   run-pass("Resolve Matches Covereage", resolve-matches-coverage, "resolved-matches-coverage", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
@@ -2524,46 +2523,6 @@ defmethod print (o:OutputStream, e:EAnnotate) :
 defn erase (t:EType) :
   ETop() when reftype?(t) else t
 
-;Update types in body
-defn update-local-types (e:EBody, vt:VarTable) -> EBody :
-  ;Retrieve the trusted declared type of a variable
-  defn var-type (v:Int, state:Table<Int,EType>, vt:VarTable) :
-    if key?(state,v) :
-      state[v]
-    else :
-      val t = type(vt,v)
-      if lostanza?(vt,v) : erase(t)
-      else : t
-
-  val state = IntTable<EType>(ETop())
-  val buffer = BodyBuffer(e)
-  for i in ins(e) do :
-    match(i:EAnnotate) :
-      update(state, { EOr(type(i), _) }, n(i))
-    else :
-      emit(buffer, i)
-  val locals = to-tuple $ for l in locals(e) seq :
-    ELocal(n(l), normalize(var-type(n(l), state, vt)), mutable?(l))
-  sub-locals(to-body(buffer), locals)
-
-defn update-types (f:ETExp, vt:VarTable) :
-  defn update-local-types-in-bodies (e:ELBigItem) :
-    match(map(update-local-types-in-bodies, e)) :
-      (e:EBody) : update-local-types(e, vt)
-      (e) : e
-  defn process (f:ELBigItem) :
-    match(f) :
-      (f:EDefn|EDefmethod|EInit) :
-        println(">>> TYPING DEFN %_" % [n(f)]) flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
-        map(process, analyze-freevars(f, vt))
-      (f:EFn) : update-local-types-in-bodies(annotate-function(f, IntTable<EType>(), vt))
-      (f:EBody) : update-local-types-in-bodies(annotate-body(f, IntTable<EType>(), vt))
-      (f) : map(process, f)
-  process(f) as ETExp
-
-defn update-type-annotations (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False) -> EPackage :
-  map-with-var-table(update-types, gvt, epackage, enabled?)
-
 ;============================================================
 ;==================== Check Elision =========================
 ;============================================================
@@ -2808,12 +2767,10 @@ defn imm-type (x:EImm, state:Table<Int,EType>, vt:VarTable) :
   match(x:EVar) : var-type(n(x), state, vt)
   else : type(vt, x)
 
+
 defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
   defn resolve-in-body (e:EBody, vt:VarTable, top:False|Int) -> EBody :
-    var found-none? = false
-    val buffer = BodyBuffer(e)
-    val state = IntTable<EType>()
-    for i in ins(e) do :
+    val ins* = for i in ins(e) map :
       ;Resolve target of call
       defn resolve-call (f:EImm, ys:Tuple<EImm>) -> EImm|False :
         val fid = match(f) :
@@ -2835,114 +2792,22 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable,
               false 
             
       ;Resolve calls and tcalls
-      match(i:EAnnotate) :
-        state[n(i)] = type(i)
-      else :
-        val ni = match(i) :
-          (i:ECall|ETCall) :
-            val f* = resolve-call(f(i), ys(i))
-            match(f*:EImm) : sub-f(i, f*) else : i
-          (i:EMatch) :
-            defn to-args (types:Tuple<EType>) -> Tuple<Arg> :
-              map(etype-to-arg{class-tree(method-table), _, false}, types)
-            val ys-types = map(imm-type{_, state, vt}, ys(i))
-            val args = to-args $ ys-types
-            val eligible-branches = to-tuple $ for b in branches(i) filter :
-              all?(overlap?, args, to-args $ types(b))
-            if length(eligible-branches) == length(branches(i)) :
-              i
-            else :
-              match(top:Int): add(changed?, top)
-              if empty?(eligible-branches) :
-                ; println("OPT MATCH DEFN %_" % [top])
-                ; println(i)
-                ; println("YS-TYPES %_" % [ys-types])
-                ; println("ELIGIBLE BRANCHES %_" % [eligible-branches])
-                ; println("NONE")
-                ; found-none? = true
-                sub-branches(i, [])
-              else if all?(subarg?, args, to-args $ types(eligible-branches[0])) :
-                ; println("GOTO [0]")
-                EGoto(n(eligible-branches[0]))
-              else :
-                ; println("PRUNE")
-                sub-branches(i, eligible-branches)
-          (i) : i
-        emit(buffer, ni)
-
-    ; match(top:Int) :
-    ;   if changed?[top] :
-    ;     println("---BEFORE: ")
-    ;     for i in ins(e) do : println(i)
-    ;     println("---DONE BEFORE ")
-  
-    if found-none? :
-      println("---BEFORE: ")
-      for i in ins(e) do : println(i)
-      println("---DONE BEFORE ")
-    to-body(buffer)
-
+      match(i) :
+        (i:ECall|ETCall) :
+          val f* = resolve-call(f(i), ys(i))
+          match(f*:EImm) : sub-f(i, f*)
+          else : i
+        (i) : i
+    sub-ins(e, ins*)
   defn resolve-texp (x:ETExp, vt:VarTable) :
     val top = match(x:EDefmethod|EDefn|EInit) : n(x)
-
-    ;Elide checks in all bodies
-    defn resolve-methods-in-bodies (e:ELBigItem) :
-      match(map(resolve-methods-in-bodies, e)) :
-        (e:EBody) : resolve-in-body(e, vt, top)
+    val result = let loop (x:ELBigItem = x) :
+      match(map(loop, x)) :
+        (e:EBody) : resolve-in-body(e,vt,top)
         (e) : e
-
-    ;Annotate and process
-    defn process (e:ELBigItem) :
-      match(e) :
-        (e:EFn) : resolve-methods-in-bodies(annotate-function(e, IntTable<EType>(), vt))
-        (e:EBody) : resolve-methods-in-bodies(annotate-body(e, IntTable<EType>(), vt))
-        (e) : map(process, e)
-    ;Compute free variables and then process
-    process(analyze-freevars(x,vt)) as ETExp
-
+    result as ETExp
   ;println("=== RESOLVING-METHODS")
   map-with-var-table(resolve-texp, gvt, epackage, enabled?)
-
-; defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
-;   defn resolve-in-body (e:EBody, vt:VarTable, top:False|Int) -> EBody :
-;     val ins* = for i in ins(e) map :
-;       ;Resolve target of call
-;       defn resolve-call (f:EImm, ys:Tuple<EImm>) -> EImm|False :
-;         val fid = match(f) :
-;           (f:EVar) : n(f)
-;           (f:ECurry) : n(x(f))
-;           (f) : false
-;         defn sub-fid (n:Int) :
-;           match(f) :
-;             (f:EVar) : EVar(n)
-;             (f:ECurry) : ECurry(EVar(n), targs(f))
-;         match(fid:Int) :
-;           val ys-types = map(type{vt, _}, ys)
-;           ; print("RESOLVING %_%_ " % [fid, ys-types])
-;           match(resolve-target(method-table, fid, ys-types)) :
-;             (n:Int) :
-;               match(top:Int) : (add(changed?, top)) ; println("RESOLVING %_%_ -> %_" % [fid, ys-types, n])
-;               sub-fid(n)
-;             (n:False) :
-;               false 
-;             
-;       ;Resolve calls and tcalls
-;       match(i) :
-;         (i:ECall|ETCall) :
-;           val f* = resolve-call(f(i), ys(i))
-;           match(f*:EImm) : sub-f(i, f*)
-;           else : i
-;         (i) : i
-;     sub-ins(e, ins*)
-;   defn resolve-texp (x:ETExp, vt:VarTable) :
-;     val top = match(x:EDefmethod|EDefn|EInit) : n(x)
-;     val result = let loop (x:ELBigItem = x) :
-;       match(map(loop, x)) :
-;         (e:EBody) : resolve-in-body(e,vt,top)
-;         (e) : e
-;     result as ETExp
-;   ;println("=== RESOLVING-METHODS")
-;   map-with-var-table(resolve-texp, gvt, epackage, enabled?)
 
 defstruct MethodDag :
   dag: Dag
@@ -2963,10 +2828,8 @@ defn specialize (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False, ch
 
   val new-variants = Vector<ETExp>()
 
-  defn spec-in-body (e:EBody, vt:VarTable,top:False|Int) -> EBody :
-    val buffer = BodyBuffer(e)
-    val state = IntTable<EType>()
-    for i in ins(e) do :
+  defn spec (e:EBody, vt:VarTable,top:False|Int) -> EBody :
+    val ins* = for i in ins(e) map :
       ;Resolve target of call
       defn spec-call (f:EImm, ys:Tuple<EImm>) -> EImm|False :
         val fid = match(f) :
@@ -3000,36 +2863,25 @@ defn specialize (epackage:EPackage, gvt:VarTable, enabled?:Int -> True|False, ch
             
       ;Resolve calls and tcalls
       match(i) :
-        (i:EAnnotate) :
-          state[n(i)] = type(i)
         (i:ECall|ETCall) :
           val f* = spec-call(f(i), ys(i))
-          val ni = match(f*:EImm) : ((match(top:Int) : add(changed?, top)), sub-f(i, f*))
-                   else : i
-          emit(buffer, ni)
+          match(f*:EImm) : ((match(top:Int) : add(changed?, top)), sub-f(i, f*))
+          else : i
         (i) :
-          emit(buffer, i)
+          i
 
-    to-body(buffer)
+    sub-ins(e, ins*)
 
   defn resolve-texp (x:ETExp, vt:VarTable) :
-    val top = match(x:EDefmethod|EDefn|EInit) :
-      ; println("SPECING %_" % [n(x)]) flush(STANDARD-OUTPUT-STREAM as FileOutputStream)
-      n(x)
-
-    defn spec-in-bodies (x:ELBigItem) :
-      match(map(spec-in-bodies, x)) :
-        (e:EBody) : spec-in-body(e,vt,top)
-        (e) : e
-
-    ;Annotate and process
-    defn process (e:ELBigItem) :
-      match(e) :
-        (e:EFn) : spec-in-bodies(annotate-function(e, IntTable<EType>(), vt))
-        (e:EBody) : spec-in-bodies(annotate-body(e, IntTable<EType>(), vt))
-        (e) : map(process, e)
-
-    process(analyze-freevars(x, vt)) as ETExp
+    val result = let loop (x:ELBigItem = x, top:False|Int = false) :
+      match(x) :
+        (e:EDefmethod|EDefn) :
+          map(loop{_, n(e)}, e)
+        (e:EBody) :
+          map(loop{_, top}, spec(e,vt,top))
+        (e) :
+          map(loop{_, top}, e)
+    result as ETExp
 
   val res0 = map-with-var-table(resolve-texp, gvt, epackage, enabled?)
   println("ADDING %_ VARIANTS" % [length(new-variants)])
