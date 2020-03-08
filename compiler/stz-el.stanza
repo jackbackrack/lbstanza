@@ -167,11 +167,11 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           println("--- LOOP %_ --- %_ ENABLED?" % [i, to-tuple $ enabled?])
           clear(changed?)
           clear(new-specializations)
-          ;run-pass("Specialize", specialize{_, _, { enabled?[_] }, changed?, fun-variants, new-specializations, specialized-parents}, "specialize", true)
+          run-pass("Specialize", specialize{_, _, { enabled?[_] }, changed?, fun-variants, new-specializations, specialized-parents}, "specialize", true)
           defn run? (id:Int) : enabled?[id] or new-specializations[id]
           ;spit(to-string("out-sp-%_.txt" % [i]), cur-package)
           run-pass("Resolve Methods", resolve-methods{_, _, method-table, run?, changed?}, "resolved-methods", false)
-          spit(to-string("out-rm-%_.txt" % [i]), cur-package)
+          ;spit(to-string("out-rm-%_.txt" % [i]), cur-package)
           ;println("RESOLVED METHODS IN %_" % [to-tuple $ changed?])
           run-pass("Within Package Inline", within-package-inline{_, inlineables, run?, changed?}, "wp-inlined", false)
           ;println("INLINED METHODS IN %_" % [to-tuple $ changed?])
@@ -187,7 +187,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           ;spit(to-string("out-cf-%_.txt" % [i]), cur-package)
           run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed2?[_] }}, "eliminate-dead-code", false)
           ;spit(to-string("out-ed-%_.txt" % [i]), cur-package)
-          ;run-pass("Despecialize", despecialize{_, _, { changed?[_] }, fun-variants, new-specializations, specialized-parents}, "despecialize", true)
+          run-pass("Despecialize", despecialize{_, _, { changed?[_] }, fun-variants, new-specializations, specialized-parents}, "despecialize", true)
           ;spit(to-string("out-ds-%_.txt" % [i]), cur-package)
           add-all(changed?, changed2?)
         loop(i + 1, n - 1, changed?, enabled?) when not empty?(changed?)
@@ -1758,7 +1758,8 @@ defn remove-unreachable-code (body:EBody) -> EBody :
       else :
         walk-nxt()
 
-  sub-ins(body, to-tuple $ peep-ins)
+  sub-ins(body, to-tuple $ new-ins)
+  ; sub-ins(body, to-tuple $ peep-ins)
 
 defn remove-unreachable-code (e:ETExp) -> ETExp :    
   defn remove-unreachable-code-in-bodies (e:ELBigItem) :
