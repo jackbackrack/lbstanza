@@ -156,7 +156,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
     val changed2? = IntSet()
     for e in exps(cur-package) do : match(e:EDefn|EDefmethod) : add(changed0?, n(e))
     spit("out0.txt", cur-package)
-    run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
+    ;run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
     init-fun-variants(cur-package)
     update-tables()
     init-defstruct-table(cur-package)
@@ -176,7 +176,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           run-pass("Within Package Inline", within-package-inline{_, inlineables, run?, changed?}, "wp-inlined", false)
           ;println("INLINED METHODS IN %_" % [to-tuple $ changed?])
           ;spit(to-string("out-il-%_.txt" % [i]), cur-package)
-          run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed?[_] }}, "eliminate-dead-code", false)
+          ;run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed?[_] }}, "eliminate-dead-code", false)
           ;spit(to-string("out-dc-%_.txt" % [i]), cur-package)
           clear(changed2?)
           run-pass("Shrink Ifs", shrink-ifs{_, _, run?, changed2?}, "shrink-ifs", false)
@@ -185,7 +185,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
           run-pass("Constant Fold", constant-fold{_, _, _, defstruct-table, run?, changed2?}, "constant-fold", false)
           ;println("CONSTANT FOLDED IN %_" % [to-tuple $ changed2?])
           ;spit(to-string("out-cf-%_.txt" % [i]), cur-package)
-          run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed2?[_] }}, "eliminate-dead-code", false)
+          ;run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { changed2?[_] }}, "eliminate-dead-code", false)
           ;spit(to-string("out-ed-%_.txt" % [i]), cur-package)
           run-pass("Despecialize", despecialize{_, _, { changed?[_] }, fun-variants, new-specializations, specialized-parents}, "despecialize", true)
           ;spit(to-string("out-ds-%_.txt" % [i]), cur-package)
@@ -202,6 +202,7 @@ defn lower (epackage:EPackage, optimize?:True|False) -> EPackage :
         num-variants = num-variants + 1
         println("  %_" % [kv])
   println("NUM-VARIANTS %_" % [num-variants])
+  run-pass("Eliminate Dead Code", eliminate-dead-code{_, _, { true }}, "eliminate-dead-code", false)
   run-pass("Resolve Matches Covereage", resolve-matches-coverage, "resolved-matches-coverage", false)
   run-pass("Lift Closures", lift-closures, "closurelifted", false)
   run-pass("Lift Type Objects", lift-type-objects, "typelifted", false)
@@ -2809,6 +2810,7 @@ defn imm-type (x:EImm, state:Table<Int,EType>, vt:VarTable) :
 
 defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable, enabled?: Int -> True|False, changed?:IntSet) -> EPackage :
   defn resolve-in-body (e:EBody, vt:VarTable, top:False|Int) -> EBody :
+    var found-none? = false
     val buffer = BodyBuffer(e)
     val state = IntTable<EType>()
     for i in ins(e) do :
@@ -2851,12 +2853,13 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable,
               i
             else :
               match(top:Int): add(changed?, top)
-              ; println("OPT MATCH DEFN %_" % [top])
-              ; println(i)
-              ; println("YS-TYPES %_" % [ys-types])
-              ; println("ELIGIBLE BRANCHES %_" % [eligible-branches])
               if empty?(eligible-branches) :
+                ; println("OPT MATCH DEFN %_" % [top])
+                ; println(i)
+                ; println("YS-TYPES %_" % [ys-types])
+                ; println("ELIGIBLE BRANCHES %_" % [eligible-branches])
                 ; println("NONE")
+                ; found-none? = true
                 sub-branches(i, [])
               else if all?(subarg?, args, to-args $ types(eligible-branches[0])) :
                 ; println("GOTO [0]")
@@ -2872,6 +2875,11 @@ defn resolve-methods (epackage:EPackage, gvt:VarTable, method-table:MethodTable,
     ;     println("---BEFORE: ")
     ;     for i in ins(e) do : println(i)
     ;     println("---DONE BEFORE ")
+  
+    if found-none? :
+      println("---BEFORE: ")
+      for i in ins(e) do : println(i)
+      println("---DONE BEFORE ")
     to-body(buffer)
 
   defn resolve-texp (x:ETExp, vt:VarTable) :
