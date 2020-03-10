@@ -273,6 +273,8 @@ public lostanza deftype VMState :
   var code-offsets: ptr<int>
   ;Variable State
   ;Changes in-between each boundary change
+  var dirty: ptr<byte>
+  var first-object-offset: ptr<byte>
   var heap: ptr<long>      
   var heap-top: ptr<long>  
   var heap-limit: ptr<long>
@@ -360,17 +362,36 @@ public defn VirtualMachine () :
     #else :
       VirtualMachine(X64Backend())
 
+;Maximum heap size
+lostanza val maximum-heap-size:long = 4L * 1024L * 1024L * 1024L
+lostanza val num-card-size-bits:long = 8L
+lostanza val card-offset-mask:long = (1L << num-card-size-bits) - 1L
+lostanza val card-mem-size:long = maximum-heap-size >> num-card-size-bits
+lostanza val no-object-offset:byte = card-offset-mask as byte
+
 public lostanza defn VirtualMachine (backend:ref<Backend>) -> ref<VirtualMachine> :
   val heap-size = 4 * 1024
   val vmstate:ptr<VMState> = call-c clib/stz_malloc(sizeof(VMState))
   vmstate.registers = call-c clib/stz_malloc(8 * 256)
+  call-c clib/printf("MALLOCING DIRTY %x\n" card-mem-size)
+  vmstate.dirty = call-c clib/stz_malloc(card-mem-size)
+  call-c clib/printf("MEMSET DIRTY\n")
+  call-c clib/memset(vmstate.dirty, 0 as byte, card-mem-size)
+  call-c clib/printf("MALLOCING OBJECT OFFSET\n")
+  vmstate.first-object-offset = call-c clib/stz_malloc(card-mem-size)
+  call-c clib/printf("MEMSET OBJ OFFSET\n")
+  call-c clib/memset(vmstate.first-object-offset, no-object-offset, card-mem-size)
   vmstate.heap = call-c clib/stz_malloc(heap-size)
+  call-c clib/printf("HEAP %lx\n" vmstate.heap)
   vmstate.heap-limit = vmstate.heap + heap-size
   vmstate.free = call-c clib/stz_malloc(heap-size)
+  call-c clib/printf("FREE %lx\n" vmstate.heap)
   vmstate.free-limit = vmstate.free + heap-size
   vmstate.heap-top = vmstate.heap
   vmstate.current-stack = alloc-stack(vmstate)
+  call-c clib/printf("STACK %lx\n" vmstate.current-stack)
   vmstate.system-stack = alloc-stack(vmstate)
+  call-c clib/printf("SYSTEM-STACK %lx\n" vmstate.system-stack)
   vmstate.system-registers = call-c clib/stz_malloc(8 * 256)
   vmstate.trie-table = null
   val class-table = ClassTable()
@@ -547,9 +568,6 @@ defn print-stack-buffer (buffer:Vector<FileInfo>) :
 ;============================================================
 
 lostanza defn extend-heap (vm:ref<VirtualMachine>, size:long) -> long :
-  ;Maximum heap size
-  val maximum-heap-size = 4L * 1024L * 1024L * 1024L
-  
   ;First run the garbage collector,
   collect-garbage(vm)
 
@@ -806,6 +824,12 @@ lostanza defn num-bytes (obj:ptr<?>, class:ref<VMClass>, vm:ref<VirtualMachine>)
 
 lostanza defn copy-bytes-to-heap (p:ptr<?>, n:long, vms:ptr<VMState>) -> int :
   val heap = vms.heap-top
+  val card = ((heap as long) as int) >>> num-card-size-bits
+  call-c clib/printf("COPYING %x\n" card)
+  if vms.first-object-offset[card] == no-object-offset :
+    val offset = (((heap as long) as int) & (card-offset-mask)) as byte
+    call-c clib/printf("SETTING OFFSET %x\n" offset)
+    vms.first-object-offset[card] = offset
   val nwords = n >>> 3
   val src = p as ptr<long>
   for (var i:long = 0, i < nwords, i = i + 1) :
