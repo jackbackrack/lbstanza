@@ -401,8 +401,6 @@ typedef struct{
   uint32_t* code_offsets;
   //Variable State
   //Changes in_between each boundary change
-  char* dirty;
-  char* first_object_offset;
   char* heap;
   char* heap_top;
   char* heap_limit;
@@ -414,6 +412,11 @@ typedef struct{
   uint64_t* system_registers;
   //Trie table
   void** trie_table;
+  //Generational GC State
+  char* dirty;
+  char* first_object_offset;
+  char* nursery;
+  char* nursery_limit;
 } VMState;
 
 #define NUM_CARD_BITS 8
@@ -1492,7 +1495,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       int64_t* address = (int64_t*)(LOCAL(x) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
       uint32_t dirty_address = ((uint32_t)address) >> NUM_CARD_BITS;
-      printf("SETTING DIRTY %x\n", dirty_address);
+      printf("SETTING DIRTY %06x\n", dirty_address);
       vms->dirty[dirty_address] = 1;
       *address = storeval;     
       continue;
@@ -1516,7 +1519,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       int64_t* address = (int64_t*)(LOCAL(x) + LOCAL(y) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
       uint32_t dirty_address = ((uint32_t)address) >> NUM_CARD_BITS;
-      printf("SETTING DIRTY %x\n", dirty_address);
+      printf("SETTING DIRTY %06x\n", dirty_address);
       vms->dirty[dirty_address] = 1;
       *address = storeval;     
       continue;
