@@ -393,29 +393,29 @@ public lostanza defn VirtualMachine (backend:ref<Backend>) -> ref<VirtualMachine
   val vmstate:ptr<VMState> = call-c clib/stz_malloc(sizeof(VMState))
   vmstate.registers = call-c clib/stz_malloc(8 * 256)
   vmstate.dirty = call-c clib/stz_malloc(num-cards)
-  call-c clib/printf("DIRTY             %p\n" vmstate.dirty)
+  call-c clib/printf("DIRTY             %08x\n" vmstate.dirty)
   call-c clib/memset(vmstate.dirty, 0 as byte, num-cards)
   vmstate.first-object-offset = call-c clib/stz_malloc(num-cards)
-  call-c clib/printf("START-OBJ-OFF     %p\n" vmstate.first-object-offset)
+  call-c clib/printf("START-OBJ-OFF     %08x\n" vmstate.first-object-offset)
   call-c clib/memset(vmstate.first-object-offset, no-object-offset, num-cards)
   vmstate.nursery = call-c clib/stz_malloc(nursery-size)
   vmstate.nursery-top = vmstate.nursery
-  call-c clib/printf("NURSERY           %p\n" vmstate.nursery)
+  call-c clib/printf("NURSERY           %08x\n" vmstate.nursery)
   vmstate.nursery-limit = vmstate.nursery + nursery-size
-  call-c clib/printf("NURSERY-LIMIT     %p\n" vmstate.nursery-limit)
+  call-c clib/printf("NURSERY-LIMIT     %08x\n" vmstate.nursery-limit)
   vmstate.heap = call-c clib/stz_malloc(heap-size)
-  call-c clib/printf("HEAP              %p\n" vmstate.heap)
+  call-c clib/printf("HEAP              %08x\n" vmstate.heap)
   vmstate.heap-limit = vmstate.heap + heap-size
-  call-c clib/printf("HEAP-LIMIT        %p\n" vmstate.heap-limit)
+  call-c clib/printf("HEAP-LIMIT        %08x\n" vmstate.heap-limit)
   vmstate.free = call-c clib/stz_malloc(heap-size)
-  call-c clib/printf("FREE              %p\n" vmstate.free)
+  call-c clib/printf("FREE              %08x\n" vmstate.free)
   vmstate.free-limit = vmstate.free + heap-size
-  call-c clib/printf("FREE-LIMIT        %p\n" vmstate.free-limit)
+  call-c clib/printf("FREE-LIMIT        %08x\n" vmstate.free-limit)
   vmstate.heap-top = vmstate.heap
   vmstate.current-stack = alloc-stack(vmstate)
-  call-c clib/printf("STACK             %p\n" vmstate.current-stack)
+  call-c clib/printf("STACK             %08x\n" vmstate.current-stack)
   vmstate.system-stack = alloc-stack(vmstate)
-  call-c clib/printf("SYSTEM-STACK      %p\n" vmstate.system-stack)
+  call-c clib/printf("SYSTEM-STACK      %08x\n" vmstate.system-stack)
   vmstate.system-registers = call-c clib/stz_malloc(8 * 256)
   vmstate.trie-table = null
   val class-table = ClassTable()
@@ -441,7 +441,7 @@ lostanza defn alloc-stack (vm:ptr<VMState>) -> long :
   val stack-size = 4 * 1024
   val frames-size = sizeof(StackFrameHeader) + stack-size
   val frames:ptr<StackFrameHeader> = call-c clib/stz_malloc(frames-size)
-  call-c clib/printf("ALLOC STACK %p - %p\n" frames (frames + frames-size))
+  call-c clib/printf("ALLOC STACK %08x - %08x\n" frames (frames + frames-size))
   frames.pool-index = -1
   frames.mark = 0
   
@@ -646,8 +646,9 @@ lostanza defn ensure-heap-space (vm:ref<VirtualMachine>, size:long, num-objs:lon
 lostanza defn resize-freespace (vms:ptr<VMState>, space:long) -> int :
   call-c clib/stz_free(vms.free)
   vms.free = call-c clib/stz_malloc(space)
-  call-c clib/printf("RESIZE FREE %p %d\n" vms.free space)
   vms.free-limit = vms.free + space
+  call-c clib/printf("--- RESIZE FREE %08x %d\n" vms.free space)
+  dump-addresses(vms)
   return 0
 
 ;============================================================
@@ -678,12 +679,13 @@ lostanza defn scan-global-roots (vm:ref<VirtualMachine>, nursery-only?:long) -> 
   return 0L
 
 lostanza defn collect-nursery-garbage (vm:ref<VirtualMachine>) -> long :
-  call-c clib/printf("COLLECT-NURSERY-GARBAGE\n")
+  call-c clib/printf("+++ COLLECT-NURSERY-GARBAGE\n")
 
   ;Swap free with heap
   val vms = vm.vmstate
   val heap = vms.nursery
   val heap-limit = vms.nursery-limit
+  val heap-nursery-start = vms.heap-top
 
   ;Initialize tracker chain
   TRACKER-CHAIN = null
@@ -694,7 +696,7 @@ lostanza defn collect-nursery-garbage (vm:ref<VirtualMachine>) -> long :
   walk-dirty-cards(vm)
 
   ;Scan heap
-  scan-nursery(vm)
+  scan-heap(vm, heap-nursery-start)
 
   ;Scan tracker chain
   scan-tracker-chain(TRACKER-CHAIN)
@@ -702,16 +704,23 @@ lostanza defn collect-nursery-garbage (vm:ref<VirtualMachine>) -> long :
   for (var i:int = 0, i < num-cards, i = i + 1) :
     vms.dirty[i] = 0 as byte
 
+  ;Clear out nursery and start fresh
+  vms.nursery-top = vms.nursery
+  
+  dump-addresses(vms)
+  call-c clib/printf("+++ END COLLECT-NURSERY-GARBAGE\n")
+
   ;Return
   return 0
 
 lostanza defn collect-garbage (vm:ref<VirtualMachine>) -> long :
   collect-nursery-garbage(vm)
   collect-heap-garbage(vm)
+  dump-heap(vm)
   return 0
 
 lostanza defn collect-heap-garbage (vm:ref<VirtualMachine>) -> long :
-  call-c clib/printf("COLLECT-HEAP-GARBAGE\n")
+  call-c clib/printf("+++ COLLECT-HEAP-GARBAGE\n")
 
   ;Swap free with heap
   val vms = vm.vmstate
@@ -732,7 +741,7 @@ lostanza defn collect-heap-garbage (vm:ref<VirtualMachine>) -> long :
   scan-global-roots(vm, 0)
 
   ;Scan heap
-  scan-heap(vm)
+  scan-heap(vm, vms.heap)
 
   ;Scan tracker chain
   scan-tracker-chain(TRACKER-CHAIN)
@@ -745,9 +754,9 @@ lostanza defn collect-heap-garbage (vm:ref<VirtualMachine>) -> long :
   for (var i:int = 0, i < num-cards, i = i + 1) :
     vms.dirty[i] = 0 as byte
 
-  ;Clear out nursery and start fresh
-  vms.nursery-top = vms.nursery
-  
+  dump-addresses(vms)
+  call-c clib/printf("+++ END COLLECT-HEAP-GARBAGE\n")
+
   ;Return
   return 0
 
@@ -779,31 +788,31 @@ lostanza defn scan-frames (frames:ptr<StackFrame>, f-end:ptr<StackFrame>, vm:ref
       f = addr(f.slots[num-slots(map).value]) as ptr<StackFrame>
   return 0
 
-lostanza defn scan-heap (vm:ref<VirtualMachine>) -> int :
+lostanza defn scan-heap (vm:ref<VirtualMachine>, start:ptr<long>) -> int :
   val vms = vm.vmstate
-  var p:ptr<long> = vms.heap
+  var p:ptr<long> = start
   val class-table = vm.vmtable.class-table
   while p < vms.heap-top :
     p = scan-object(p, vm, class-table, 0)
   return 0
 
-lostanza defn scan-nursery (vm:ref<VirtualMachine>) -> int :
-  val vms = vm.vmstate
-  var p:ptr<long> = vms.nursery
-  val class-table = vm.vmtable.class-table
-  while p < vms.nursery-top :
-    p = scan-object(p, vm, class-table, 0)
+lostanza defn dump-addresses (vms:ptr<VMState>) -> int :
+  call-c clib/printf("HEAP          %08x\n" vms.heap)
+  call-c clib/printf("HEAP-TOP      %08x\n" vms.heap-top)
+  call-c clib/printf("HEAP-LIMIT    %08x\n" vms.heap-limit)
+  call-c clib/printf("FREE          %08x\n" vms.free)
+  call-c clib/printf("FREE-LIMIT    %08x\n" vms.free-limit)
+  call-c clib/printf("NURSERY       %08x\n" vms.nursery)
+  call-c clib/printf("NURSERY-TOP   %08x\n" vms.nursery-top)
+  call-c clib/printf("NURSERY-LIMIT %08x\n" vms.nursery-limit)
+  call-c clib/printf("STACK         %08x\n" vms.current-stack)
+  call-c clib/printf("SYS-STACK     %08x\n" vms.system-stack)
   return 0
 
 lostanza defn walk-dirty-cards (vm:ref<VirtualMachine>) -> int :
   call-c clib/printf("--- WALKING DIRTY CARDS\n")
   val vms = vm.vmstate
-  call-c clib/printf("HEAP       %p\n" vms.heap)
-  call-c clib/printf("HEAP-LIMIT %p\n" vms.heap-limit)
-  call-c clib/printf("FREE       %p\n" vms.free)
-  call-c clib/printf("FREE-LIMIT %p\n" vms.free-limit)
-  call-c clib/printf("STACK      %p\n" vms.current-stack)
-  call-c clib/printf("SYS-STACK  %p\n" vms.system-stack)
+  dump-addresses(vms)
   val class-table = vm.vmtable.class-table
   val heap-first-card = ((vms.heap as long) & card-offset-mask) as int
   val heap-limit-card = ((vms.heap-limit as long) & card-offset-mask) as int
@@ -811,7 +820,7 @@ lostanza defn walk-dirty-cards (vm:ref<VirtualMachine>) -> int :
     labels :
       begin :
         if vms.dirty[i] != 0 :
-          call-c clib/printf("DIRTY %06x\n" i)
+          call-c clib/printf("FOUND DIRTY %06x\n" i)
           for (var j:int = i, j >= 0, j = j - 1) :
             val off = vms.first-object-offset[j]
             if off != no-object-offset :
@@ -819,7 +828,7 @@ lostanza defn walk-dirty-cards (vm:ref<VirtualMachine>) -> int :
               call-c clib/printf("  FOUND OFF %02x AT %06x PTR %0x\n" off j p)
               val end-address  = card-index-to-pointer(vms, i + 1)
               while p < end-address :
-                call-c clib/printf("    SCANNING %p\n" p)
+                call-c clib/printf("    SCANNING %08x\n" p)
                 p = scan-object(p, vm, class-table, 1)
               goto break()
       break () : ()
@@ -855,9 +864,8 @@ lostanza defn post-gc-weak-object (ref:long) -> long :
 
 lostanza defn scan-object (p:ptr<long>, vm:ref<VirtualMachine>, class-table:ref<ClassTable>, nursery-only?:long) -> ptr<long> :
   ;p is [tag, cells ...]
-  call-c clib/printf("SCAN-OBJECT %p\n" p)
   val tag = [p] as int
-  call-c clib/printf("  TAG %02x\n" tag)
+  call-c clib/printf("SCAN-OBJECT %08x TAG %04x\n" p tag)
   val class = get(class-table, new Int{tag})
   match(class) :
     (class:ref<VMLeafClass>) :
@@ -922,7 +930,7 @@ lostanza defn post-gc-object (ref:long, vm:ref<VirtualMachine>, nursery-only?:lo
     else if nursery-only? and not-ptr-in-nursery?(obj, vms) :
       return ref
     else :
-      if nursery-only? : call-c clib/printf("NURSERY POSTING %p\n" ref)
+      ;if nursery-only? : call-c clib/printf("NURSERY POSTING %08x\n" ref)
       val obj* = tag(vms.heap-top)
       val class = get(vm.vmtable.class-table, new Int{obj-tag as int})
       copy-bytes-to-heap(obj, num-bytes(obj, class, vm), vms)
@@ -951,11 +959,13 @@ lostanza defn num-bytes (obj:ptr<?>, class:ref<VMClass>, vm:ref<VirtualMachine>)
 lostanza defn copy-bytes-to-heap (p:ptr<?>, n:long, vms:ptr<VMState>) -> int :
   val heap = vms.heap-top
   val card = pointer-to-card-index(heap)
-  call-c clib/printf("COPYING %06x PTR %p\n" card heap)
+  call-c clib/printf("COPYING %06x PTR %08x FROM %08x" card heap p)
   if vms.first-object-offset[card] == no-object-offset :
     val offset = (((heap as long) as int) & (card-offset-mask)) as byte
-    call-c clib/printf("  SETTING OFFSET %02x\n" offset)
+    call-c clib/printf(": SETTING OFFSET %02x\n" offset)
     vms.first-object-offset[card] = offset
+  else :
+    call-c clib/printf("\n")
   val nwords = n >>> 3
   val src = p as ptr<long>
   for (var i:long = 0, i < nwords, i = i + 1) :

@@ -350,7 +350,6 @@
 
 #define RESTORE_STATE() \
   nursery_top = vms->nursery_top; \
-  nursery_limit = vms->nursery_limit; \
   current_stack = vms->current_stack; \
   stk = untag_stack(current_stack); \
   stack_pointer = stk->stack_pointer; \
@@ -1496,7 +1495,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       int64_t* address = (int64_t*)(LOCAL(x) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
       uint32_t dirty_address = ((uint32_t)address) >> NUM_CARD_BITS;
-      printf("SETTING DIRTY %06x\n", dirty_address);
+      // printf("SETTING DIRTY %06x\n", dirty_address);
       vms->dirty[dirty_address] = 1;
       *address = storeval;     
       continue;
@@ -1520,7 +1519,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       int64_t* address = (int64_t*)(LOCAL(x) + LOCAL(y) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
       uint32_t dirty_address = ((uint32_t)address) >> NUM_CARD_BITS;
-      printf("SETTING DIRTY %06x\n", dirty_address);
+      // printf("SETTING DIRTY %06x\n", dirty_address);
       vms->dirty[dirty_address] = 1;
       *address = storeval;     
       continue;
@@ -1608,7 +1607,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       uint64_t obj = ptr_to_ref(nursery_top);
       SET_LOCAL(x, obj);
       // if (num_bytes > (1 * 1024))
-      printf("ALLOC %llu TYPE %x AT %p\n", num_bytes, type, nursery_top);
+      printf("ALLOC %04u TYPE %04x AT %08llx\n", num_bytes, type, (uint64_t)nursery_top);
       nursery_top = nursery_top + num_bytes;
       continue;
     }
@@ -1620,7 +1619,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       *(uint64_t*)nursery_top = type;
       uint64_t obj = ptr_to_ref(nursery_top);
       // if (num_bytes > (1 * 1024))
-      printf("ALLOC %llu TYPE %x AT %p\n", num_bytes, type, nursery_top);
+      printf("ALLOC %04llu TYPE %04x AT %08llx\n", num_bytes, type, (uint64_t)nursery_top);
       SET_LOCAL(x, obj);
       nursery_top = nursery_top + num_bytes;
       continue;
