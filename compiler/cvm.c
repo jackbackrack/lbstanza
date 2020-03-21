@@ -417,6 +417,8 @@ typedef struct{
   char* nursery;
   char* nursery_top;
   char* nursery_limit;
+  int num_allocated;
+  int num_copied;
 } VMState;
 
 #define NUM_CARD_BITS 8
@@ -1495,7 +1497,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       int64_t* address = (int64_t*)(LOCAL(x) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
       uint32_t dirty_address = ((uint32_t)address) >> NUM_CARD_BITS;
-      // printf("SETTING DIRTY %06x\n", dirty_address);
+      printf("  SETTING DIRTY %06x %08x %08x %0lx\n", dirty_address, address, storeval, storeval);
       vms->dirty[dirty_address] = 1;
       *address = storeval;     
       continue;
@@ -1519,7 +1521,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       int64_t* address = (int64_t*)(LOCAL(x) + LOCAL(y) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
       uint32_t dirty_address = ((uint32_t)address) >> NUM_CARD_BITS;
-      // printf("SETTING DIRTY %06x\n", dirty_address);
+      printf("  SETTING DIRTY %06x %08x 08x %0lx\n", dirty_address, address, storeval, storeval);
       vms->dirty[dirty_address] = 1;
       *address = storeval;     
       continue;
@@ -1609,6 +1611,9 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       // if (num_bytes > (1 * 1024))
       printf("ALLOC %04u TYPE %04x AT %08llx\n", num_bytes, type, (uint64_t)nursery_top);
       nursery_top = nursery_top + num_bytes;
+      vms->num_allocated = vms->num_allocated + 1;
+      if (nursery_top > nursery_limit)
+        printf("*** ALLOC FAILURE\n");
       continue;
     }
     case ALLOC_OPCODE_LOCAL : {
@@ -1622,6 +1627,9 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       printf("ALLOC %04llu TYPE %04x AT %08llx\n", num_bytes, type, (uint64_t)nursery_top);
       SET_LOCAL(x, obj);
       nursery_top = nursery_top + num_bytes;
+      vms->num_allocated = vms->num_allocated + 1;
+      if (nursery_top > nursery_limit)
+        printf("*** ALLOC FAILURE\n");
       continue;
     }
     case GC_OPCODE : {

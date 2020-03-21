@@ -166,6 +166,7 @@ public defn subtype? (ct:ClassTable, a:TypeSet, b:TypeSet) :
 public deftype ClassNameTable
 public defmulti add (t:ClassNameTable, names:Seqable<KeyValue<Int,String>>) -> False
 public defmulti get (t:ClassNameTable, c:Int) -> StableString
+public defmulti key? (t:ClassNameTable, c:Int) -> True|False
 
 public defn ClassNameTable () :
   val names = IntTable<StableString>()
@@ -175,6 +176,8 @@ public defn ClassNameTable () :
         names[key(e)] = StableString(value(e))
     defmethod get (this, c:Int) :
       names[c]
+    defmethod key? (this, c:Int) :
+      key?(names, c)
 
 public lostanza defn load-class-names (t:ref<VMTable>, names:ref<Seqable<KeyValue<Int,String>>>) -> ref<False> :
   add(t.class-name-table, names)
