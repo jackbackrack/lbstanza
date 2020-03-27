@@ -344,13 +344,13 @@
   stack_pointer = (StackFrame*)((char*)stack_pointer - sizeof(StackFrame) - (num_locals) * 8);  
 
 #define SAVE_STATE() \
-  vms->heap_top = heap_top; \
+  vms->nursery_top = nursery_top; \
   vms->current_stack = current_stack; \
   stk->stack_pointer = stack_pointer; 
 
 #define RESTORE_STATE() \
-  heap_top = vms->heap_top; \
-  heap_limit = vms->heap_limit; \
+  nursery_top = vms->nursery_top; \
+  nursery_limit = vms->nursery_limit; \
   current_stack = vms->current_stack; \
   stk = untag_stack(current_stack); \
   stack_pointer = stk->stack_pointer; \
@@ -412,6 +412,12 @@ typedef struct{
   uint64_t* system_registers;
   //Trie table
   void** trie_table;
+  //Generational GC State
+  char* nursery;
+  char* nursery_top;
+  char* nursery_limit;
+  int num_allocated;
+  int num_copied;
 } VMState;
 
 typedef struct{
@@ -490,8 +496,8 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
   uint32_t* code_offsets = vms->code_offsets;
   //Variable State
   //Changes in_between each boundary change
-  char* heap_top = vms->heap_top;
-  char* heap_limit = vms->heap_limit;
+  char* nursery_top = vms->nursery_top;
+  char* nursery_limit = vms->nursery_limit;
   uint64_t current_stack = vms->current_stack;
   Stack* stk = untag_stack(current_stack);
   StackFrame* stack_pointer = stk->stack_pointer;
@@ -1553,7 +1559,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       size = (size + 7) & -8;
       int num_locals = y;
       int offset = x * 4;
-      if(heap_top + size <= heap_limit){
+      if(nursery_top + size <= nursery_limit){
         pc = pc0 + offset;
         continue;
       }else{
@@ -1571,7 +1577,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       uint64_t size = value;
       int num_locals = y;
       int offset = x * 4;
-      if(heap_top + size <= heap_limit){
+      if(nursery_top + size <= nursery_limit){
         pc = pc0 + offset;
         continue;
       }else{
@@ -1588,10 +1594,11 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       DECODE_C();
       int num_bytes = 8 + y;
       int type = value;
-      *(uint64_t*)heap_top = type;
-      uint64_t obj = ptr_to_ref(heap_top);
+      *(uint64_t*)nursery_top = type;
+      uint64_t obj = ptr_to_ref(nursery_top);
       SET_LOCAL(x, obj);
-      heap_top = heap_top + num_bytes;
+      nursery_top = nursery_top + num_bytes;
+      vms->num_allocated = vms->num_allocated + 1;
       continue;
     }
     case ALLOC_OPCODE_LOCAL : {
@@ -1599,10 +1606,11 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       uint64_t num_bytes = 8 + LOCAL(y);
       num_bytes = (num_bytes + 7) & -8;
       int type = value;
-      *(uint64_t*)heap_top = type;
-      uint64_t obj = ptr_to_ref(heap_top);
+      *(uint64_t*)nursery_top = type;
+      uint64_t obj = ptr_to_ref(nursery_top);
       SET_LOCAL(x, obj);
-      heap_top = heap_top + num_bytes;
+      nursery_top = nursery_top + num_bytes;
+      vms->num_allocated = vms->num_allocated + 1;
       continue;
     }
     case GC_OPCODE : {

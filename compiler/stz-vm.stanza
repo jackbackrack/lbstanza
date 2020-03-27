@@ -284,6 +284,12 @@ public lostanza deftype VMState :
   var system-registers: ptr<long>
   ;Trie table
   var trie-table: ptr<ptr<int>>
+  ;Generational GC State
+  var nursery: ptr<long>
+  var nursery-top: ptr<long>
+  var nursery-limit: ptr<long>
+  var num-allocated: int
+  var num-copied: int
 
 lostanza deftype StackFrameHeader :
   var pool-index:int
@@ -351,6 +357,17 @@ lostanza defn update-vmstate (vm:ref<VirtualMachine>) -> ref<False> :
 ;==================== VM Implementation =====================
 ;============================================================
 
+;Maximum heap size
+lostanza val maximum-heap-address-bits:long = 32L
+lostanza val maximum-heap-size:long = (1L << maximum-heap-address-bits)
+lostanza val maximum-heap-address-mask:long = maximum-heap-size - 1L
+;lostanza val nursery-size:long = 1L << 24L
+lostanza val nursery-size:long = 1L << 10L
+lostanza val initial-heap-size:long = 1L << 16L
+
+lostanza defn not-ptr-in-nursery? (p:ptr<long>, vms:ptr<VMState>) -> long :
+  return p < vms.nursery or p >= vms.nursery-limit
+
 public defn VirtualMachine () :
   #if-defined(PLATFORM-WINDOWS) :
     fatal("Not yet implemented")
@@ -361,13 +378,21 @@ public defn VirtualMachine () :
       VirtualMachine(X64Backend())
 
 public lostanza defn VirtualMachine (backend:ref<Backend>) -> ref<VirtualMachine> :
-  val heap-size = 4 * 1024
   val vmstate:ptr<VMState> = call-c clib/stz_malloc(sizeof(VMState))
   vmstate.registers = call-c clib/stz_malloc(8 * 256)
-  vmstate.heap = call-c clib/stz_malloc(heap-size)
-  vmstate.heap-limit = vmstate.heap + heap-size
-  vmstate.free = call-c clib/stz_malloc(heap-size)
-  vmstate.free-limit = vmstate.free + heap-size
+  vmstate.nursery = call-c clib/stz_malloc(2 * nursery-size)
+  vmstate.nursery-top = vmstate.nursery
+  call-c clib/printf("NURSERY           %08x\n" vmstate.nursery)
+  vmstate.nursery-limit = vmstate.nursery + nursery-size
+  call-c clib/printf("NURSERY-LIMIT     %08x\n" vmstate.nursery-limit)
+  vmstate.heap = call-c clib/stz_malloc(initial-heap-size)
+  call-c clib/printf("HEAP              %08x\n" vmstate.heap)
+  vmstate.heap-limit = vmstate.heap + initial-heap-size
+  call-c clib/printf("HEAP-LIMIT        %08x\n" vmstate.heap-limit)
+  vmstate.free = call-c clib/stz_malloc(initial-heap-size)
+  call-c clib/printf("FREE              %08x\n" vmstate.free)
+  vmstate.free-limit = vmstate.free + initial-heap-size
+  call-c clib/printf("FREE-LIMIT        %08x\n" vmstate.free-limit)
   vmstate.heap-top = vmstate.heap
   vmstate.current-stack = alloc-stack(vmstate)
   vmstate.system-stack = alloc-stack(vmstate)
@@ -437,6 +462,7 @@ var VIRTUAL-MACHINE : VirtualMachine|False = false
 protected lostanza var register-array:ptr<long>
 
 public lostanza defn run-bytecode (vm:ref<VirtualMachine>, start-func:ref<Int>) -> ref<False> :
+  call-c clib/printf("START-FUNC %d\n", start-func.value)
   VIRTUAL-MACHINE = vm
   register-array = vm.vmstate.registers
   initialize-stack-pointer(vm)
@@ -493,6 +519,7 @@ lostanza defn null-stack-pointer (vm:ref<VirtualMachine>) -> ref<False> :
 ;Set the starting pc of the virtual machine to fid. The virtual machine
 ;will start executing from the given function.
 lostanza defn set-starting-func (vm:ref<VirtualMachine>, fid:ref<Int>) -> ref<False> :
+  call-c clib/printf("SET-STARTING-FUN %d\n", fid.value)
   val pc = get(vm.vmtable.function-addresses,fid).value
   val stk:ptr<Stack> = untag(vm.vmstate.current-stack)
   stk.pc = pc * 4
@@ -547,17 +574,19 @@ defn print-stack-buffer (buffer:Vector<FileInfo>) :
 ;============================================================
 
 lostanza defn extend-heap (vm:ref<VirtualMachine>, size:long) -> long :
-  ;Maximum heap size
-  val maximum-heap-size = 4L * 1024L * 1024L * 1024L
-  
-  ;First run the garbage collector,
-  collect-garbage(vm)
-
   ;Check whether we're still out of space.
   val vms = vm.vmstate
-  if vms.heap-top + size > vms.heap-limit :
+
+  ;First run the garbage collector,
+  collect-nursery-garbage(vm)
+
+  ;Check whether we're still out of space.
+  if (vms.heap-top + size + nursery-size) > vms.heap-limit :
+    collect-heap-garbage(vm)
+
+  if (vms.heap-top + size + nursery-size) > vms.heap-limit :
     ;Compute desired heap size
-    val desired-space = vms.heap-top + size - vms.heap
+    val desired-space = vms.heap-top + size - vms.heap + nursery-size
     ;Extend-heap failure if we're out of space.
     if desired-space > maximum-heap-size :
       call-c clib/printf("extend-heap failed\n")
@@ -567,7 +596,7 @@ lostanza defn extend-heap (vm:ref<VirtualMachine>, size:long) -> long :
     while space < desired-space : space = space * 2
     ;Resize the heap and use the GC to move contents over
     resize-freespace(vms, space)
-    collect-garbage(vm)
+    collect-heap-garbage(vm)
     resize-freespace(vms, space)
     ;Now we have enough space.
     return 1
@@ -593,7 +622,7 @@ lostanza defn extend-heap (vm:ref<VirtualMachine>, size:long) -> long :
 lostanza defn ensure-heap-space (vm:ref<VirtualMachine>, size:long, num-objs:long) -> int :
   val total-size = size + num-objs * 8
   val vms = vm.vmstate
-  if vms.heap-top + total-size > vms.heap-limit :
+  if (vms.heap-top + total-size + nursery-size) > vms.heap-limit :
     val success = extend-heap(vm, total-size)
     if success == 0 : fatal("VM Out of Memory")
   return 0
@@ -609,7 +638,69 @@ lostanza defn resize-freespace (vms:ptr<VMState>, space:long) -> int :
 ;============================================================
 
 lostanza var TRACKER-CHAIN:ptr<LivenessTrackerObj>
+
+lostanza defn scan-global-roots (vm:ref<VirtualMachine>, nursery-only?:long) -> long :
+  val vms = vm.vmstate
+  ;Scan global roots
+  val globals:ptr<long> = vm.vmtable.globals.mem
+  val roots = to-seq(roots(vm.vmtable.global-table))
+  while empty?(roots) == false :
+    val i = next(roots).value
+    globals[i] = post-gc-object(globals[i], vm, nursery-only?)
+
+  ;Scan const roots
+  val nconsts = vm.vmtable.consts.size / 8
+  val consts:ptr<long> = vm.vmtable.consts.mem
+  for (var i:int = 0, i < nconsts, i = i + 1) :
+    consts[i] = post-gc-object(consts[i], vm, nursery-only?)
+
+  ;Scan stack roots
+  if nursery-only? == 0 :
+    vms.current-stack = post-gc-object(vms.current-stack, vm, nursery-only?)
+    vms.system-stack = post-gc-object(vms.system-stack, vm, nursery-only?)
+
+  return 0L
+
+lostanza defn collect-nursery-garbage (vm:ref<VirtualMachine>) -> long :
+  call-c clib/printf("+++ COLLECT-NURSERY-GARBAGE\n")
+
+  val vms = vm.vmstate
+
+  vms.num-copied = 0
+
+  ;Initialize tracker chain
+  TRACKER-CHAIN = null
+
+  scan-global-roots(vm, 1)
+
+  ;Scan heap
+  scan-heap(vm, vms.heap, 1)
+
+  ;Scan tracker chain
+  scan-tracker-chain(TRACKER-CHAIN)
+
+  ;Clear out nursery and start fresh
+  vms.nursery-top = vms.nursery
+  
+  dump-addresses(vms)
+
+  if vms.num-allocated != vms.num-copied :
+    call-c clib/printf("--- %d/%d COPIED\n", vms.num-copied, vms.num-allocated)
+
+  call-c clib/printf("+++ END COLLECT-NURSERY-GARBAGE\n")
+
+  vms.num-allocated = 0
+  ;Return
+  return 0
+
 lostanza defn collect-garbage (vm:ref<VirtualMachine>) -> long :
+  collect-nursery-garbage(vm)
+  collect-heap-garbage(vm)
+  return 0
+
+lostanza defn collect-heap-garbage (vm:ref<VirtualMachine>) -> long :
+  call-c clib/printf("+++ COLLECT-HEAP-GARBAGE\n")
+
   ;Swap free with heap
   val vms = vm.vmstate
   val heap = vms.heap
@@ -626,27 +717,17 @@ lostanza defn collect-garbage (vm:ref<VirtualMachine>) -> long :
   TRACKER-CHAIN = null
 
   ;Scan global roots
-  val globals:ptr<long> = vm.vmtable.globals.mem
-  val roots = to-seq(roots(vm.vmtable.global-table))
-  while empty?(roots) == false :
-    val i = next(roots).value
-    globals[i] = post-gc-object(globals[i], vm)
-
-  ;Scan const roots
-  val nconsts = vm.vmtable.consts.size / 8
-  val consts:ptr<long> = vm.vmtable.consts.mem
-  for (var i:int = 0, i < nconsts, i = i + 1) :
-    consts[i] = post-gc-object(consts[i], vm)
-
-  ;Scan stack roots
-  vms.current-stack = post-gc-object(vms.current-stack, vm)
-  vms.system-stack = post-gc-object(vms.system-stack, vm)
+  scan-global-roots(vm, 0)
 
   ;Scan heap
-  scan-heap(vm)
+  scan-heap(vm, vms.heap, 0)
 
   ;Scan tracker chain
   scan-tracker-chain(TRACKER-CHAIN)
+
+  dump-addresses(vms)
+
+  call-c clib/printf("+++ END COLLECT-HEAP-GARBAGE\n")
 
   ;Return
   return 0
@@ -664,7 +745,7 @@ lostanza defn num-slots (f:ptr<StackFrame>, vm:ref<VirtualMachine>) -> int :
 lostanza defn header (p:ptr<StackFrame>) -> ptr<StackFrameHeader> :
   return (p - sizeof(StackFrameHeader)) as ptr<StackFrameHeader>
 
-lostanza defn scan-frames (frames:ptr<StackFrame>, f-end:ptr<StackFrame>, vm:ref<VirtualMachine>) -> int :
+lostanza defn scan-frames (frames:ptr<StackFrame>, f-end:ptr<StackFrame>, vm:ref<VirtualMachine>, nursery-only?:long) -> int :
   if frames != null :
     val frameheader = header(frames)
     frameheader.mark = 1
@@ -675,16 +756,29 @@ lostanza defn scan-frames (frames:ptr<StackFrame>, f-end:ptr<StackFrame>, vm:ref
       val num-live = length(live-slots).value
       for (var i:int = 0, i < num-live, i = i + 1) :
         val s = get(live-slots, new Int{i}).value
-        f.slots[s] = post-gc-object(f.slots[s], vm)
+        f.slots[s] = post-gc-object(f.slots[s], vm, nursery-only?)
       f = addr(f.slots[num-slots(map).value]) as ptr<StackFrame>
   return 0
 
-lostanza defn scan-heap (vm:ref<VirtualMachine>) -> int :
+lostanza defn scan-heap (vm:ref<VirtualMachine>, start:ptr<long>, nursery-only?:long) -> int :
   val vms = vm.vmstate
-  var p:ptr<long> = vms.heap
+  var p:ptr<long> = start
   val class-table = vm.vmtable.class-table
   while p < vms.heap-top :
-    p = scan-object(p, vm, class-table)
+    p = scan-object(p, vm, class-table, nursery-only?)
+  return 0
+
+lostanza defn dump-addresses (vms:ptr<VMState>) -> int :
+  call-c clib/printf("HEAP          %08x\n" vms.heap)
+  call-c clib/printf("HEAP-TOP      %08x\n" vms.heap-top)
+  call-c clib/printf("HEAP-LIMIT    %08x\n" vms.heap-limit)
+  call-c clib/printf("FREE          %08x\n" vms.free)
+  call-c clib/printf("FREE-LIMIT    %08x\n" vms.free-limit)
+  call-c clib/printf("NURSERY       %08x\n" vms.nursery)
+  call-c clib/printf("NURSERY-TOP   %08x\n" vms.nursery-top)
+  call-c clib/printf("NURSERY-LIMIT %08x\n" vms.nursery-limit)
+  call-c clib/printf("STACK         %08x\n" vms.current-stack)
+  call-c clib/printf("SYS-STACK     %08x\n" vms.system-stack)
   return 0
 
 lostanza deftype LivenessTrackerObj :
@@ -714,7 +808,7 @@ lostanza defn post-gc-weak-object (ref:long) -> long :
   else :
     return ref
 
-lostanza defn scan-object (p:ptr<long>, vm:ref<VirtualMachine>, class-table:ref<ClassTable>) -> ptr<long> :
+lostanza defn scan-object (p:ptr<long>, vm:ref<VirtualMachine>, class-table:ref<ClassTable>, nursery-only?:long) -> ptr<long> :
   ;p is [tag, cells ...]
   val tag = [p] as int
   val class = get(class-table, new Int{tag})
@@ -730,7 +824,7 @@ lostanza defn scan-object (p:ptr<long>, vm:ref<VirtualMachine>, class-table:ref<
         ;Scan the frames of a stack
         if tag == STACK-TYPE.value :
           val s = (p + 8) as ptr<Stack>
-          scan-frames(s.frames, s.stack-pointer, vm)
+          scan-frames(s.frames, s.stack-pointer, vm, nursery-only?)
         ;Get properties
         val size = object-size-on-heap(size(class).value)
         val roots = roots(class)
@@ -739,7 +833,7 @@ lostanza defn scan-object (p:ptr<long>, vm:ref<VirtualMachine>, class-table:ref<
         val obj = p as ptr<ObjectLayout>
         for (var i:int = 0, i < num-roots, i = i + 1) :
           val r = get(roots, new Int{i}).value
-          obj.slots[r] = post-gc-object(obj.slots[r], vm)
+          obj.slots[r] = post-gc-object(obj.slots[r], vm, nursery-only?)
         ;Return end of object
         return p + size
     (class:ref<VMArrayClass>) :
@@ -755,19 +849,19 @@ lostanza defn scan-object (p:ptr<long>, vm:ref<VirtualMachine>, class-table:ref<
       val len = array.slots[0]
       for (var i:int = 0, i < num-base-roots, i = i + 1) :
         val r = get(base-roots, new Int{i}).value
-        array.slots[r] = post-gc-object(array.slots[r], vm)
+        array.slots[r] = post-gc-object(array.slots[r], vm, nursery-only?)
       ;Scan item roots
       var items:ptr<long> = addr(array.slots) + base-size
       if num-item-roots > 0 :
         for (var n:long = 0, n < len, n = n + 1) :
           for (var i:int = 0, i < num-item-roots, i = i + 1) :
             val r = get(item-roots, new Int{i}).value
-            items[r] = post-gc-object(items[r], vm)
+            items[r] = post-gc-object(items[r], vm, nursery-only?)
           items = items + item-size
       ;Return end of array
       return p + object-size-on-heap(base-size + item-size * len)
 
-lostanza defn post-gc-object (ref:long, vm:ref<VirtualMachine>) -> long :
+lostanza defn post-gc-object (ref:long, vm:ref<VirtualMachine>, nursery-only?:long) -> long :
   val vms = vm.vmstate
   val tagbits = ref & 7L
   if tagbits == REF-TAG-BITS :
@@ -777,6 +871,8 @@ lostanza defn post-gc-object (ref:long, vm:ref<VirtualMachine>) -> long :
     if obj-tag == -1L :
       val heart = obj as ptr<BrokenHeartLayout>
       return heart.forward
+    else if nursery-only? and not-ptr-in-nursery?(obj, vms) :
+      return ref
     ;Case: Uncopied object
     else :
       val obj* = tag(vms.heap-top)
@@ -805,6 +901,7 @@ lostanza defn num-bytes (obj:ptr<?>, class:ref<VMClass>, vm:ref<VirtualMachine>)
       return object-size-on-heap(base-size + len * item-size)
 
 lostanza defn copy-bytes-to-heap (p:ptr<?>, n:long, vms:ptr<VMState>) -> int :
+  vms.num-copied = vms.num-copied + 1
   val heap = vms.heap-top
   val nwords = n >>> 3
   val src = p as ptr<long>
