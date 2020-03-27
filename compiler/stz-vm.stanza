@@ -577,8 +577,12 @@ lostanza defn extend-heap (vm:ref<VirtualMachine>, size:long) -> long :
   ;Check whether we're still out of space.
   val vms = vm.vmstate
 
+  dump-stack(vms.current-stack, vm)
+
   ;First run the garbage collector,
   collect-nursery-garbage(vm)
+
+  dump-stack(vms.current-stack, vm)
 
   ;Check whether we're still out of space.
   if (vms.heap-top + size + nursery-size) > vms.heap-limit :
