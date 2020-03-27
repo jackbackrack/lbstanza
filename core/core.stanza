@@ -596,12 +596,16 @@ lostanza var MAXIMUM-HEAP-SIZE : long = 4L * 1024L * 1024L * 1024L
 
 lostanza defn extend-heap (size:long) -> long :
   ;Collect garbage, and ensure we freed enough space
+  call-c clib/printf("+++ START GC\n")
   val remaining = call-prim collect-garbage(size)
+  call-c clib/printf("+++ FREE-UNMARKED-STACKS\n")
   free-unmarked-stacks(addr(STACK-POOL))
   if remaining < size : fatal!("Out of memory.")
   ;Now run the GC notifiers, if they have been initialized
   if initialized-gc-notifiers? :
+    call-c clib/printf("+++ START RUN-GC-NOTIFIERS\n")
     run-gc-notifiers()
+    call-c clib/printf("+++ DONE RUN-GC-NOTIFIERS\n")
   ;If GC notifiers allocated too much space, then collect the garbage again
   ;(Happens rarely.)
   val vms:ptr<VMState> = call-prim flush-vm()
@@ -611,6 +615,7 @@ lostanza defn extend-heap (size:long) -> long :
     val remaining = call-prim collect-garbage(size)
     free-unmarked-stacks(addr(STACK-POOL))
     if remaining < size : fatal!("Out of memory.")  
+  call-c clib/printf("+++ DONE GC\n")
   return 0
 
 ;============================================================

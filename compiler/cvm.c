@@ -1599,7 +1599,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       *(uint64_t*)nursery_top = type;
       uint64_t obj = ptr_to_ref(nursery_top);
       SET_LOCAL(x, obj);
-      printf("ALLOC %d %04llu TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)nursery_top, retrieve_class_name(vms, type));
+      printf("ALLOC %d %04d TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)nursery_top, retrieve_class_name(vms, type));
       nursery_top = nursery_top + num_bytes;
       vms->num_allocated = vms->num_allocated + 1;
       continue;
@@ -1612,7 +1612,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       *(uint64_t*)nursery_top = type;
       uint64_t obj = ptr_to_ref(nursery_top);
       SET_LOCAL(x, obj);
-      printf("ALLOC %d %04llu TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)nursery_top, retrieve_class_name(vms, type));
+      printf("ALLOC %d %04d TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)nursery_top, retrieve_class_name(vms, type));
       nursery_top = nursery_top + num_bytes;
       vms->num_allocated = vms->num_allocated + 1;
       continue;
