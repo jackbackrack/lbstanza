@@ -344,11 +344,14 @@
   stack_pointer = (StackFrame*)((char*)stack_pointer - sizeof(StackFrame) - (num_locals) * 8);  
 
 #define SAVE_STATE() \
+  vms->heap_top = heap_top; \
   vms->nursery_top = nursery_top; \
   vms->current_stack = current_stack; \
   stk->stack_pointer = stack_pointer; 
 
 #define RESTORE_STATE() \
+  heap_top = vms->heap_top; \
+  heap_limit = vms->heap_limit; \
   nursery_top = vms->nursery_top; \
   nursery_limit = vms->nursery_limit; \
   current_stack = vms->current_stack; \
@@ -500,6 +503,8 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
   //Changes in_between each boundary change
   char* nursery_top = vms->nursery_top;
   char* nursery_limit = vms->nursery_limit;
+  char* heap_top = vms->heap_top;
+  char* heap_limit = vms->heap_limit;
   uint64_t current_stack = vms->current_stack;
   Stack* stk = untag_stack(current_stack);
   StackFrame* stack_pointer = stk->stack_pointer;
@@ -1495,6 +1500,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       DECODE_E();
       int64_t* address = (int64_t*)(LOCAL(x) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
+      // printf("WRITE8 %p %llu\n", address, storeval);
       *address = storeval;     
       continue;
     }
@@ -1516,6 +1522,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       DECODE_E();
       int64_t* address = (int64_t*)(LOCAL(x) + LOCAL(y) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
+      // printf("WRITE8 %p %llu\n", address, storeval);
       *address = storeval;     
       continue;
     }
@@ -1612,7 +1619,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       *(uint64_t*)nursery_top = type;
       uint64_t obj = ptr_to_ref(nursery_top);
       SET_LOCAL(x, obj);
-      printf("ALLOC %d %04d TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)nursery_top, retrieve_class_name(vms, type));
+      printf("ALLOC %d %04llu TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)nursery_top, retrieve_class_name(vms, type));
       nursery_top = nursery_top + num_bytes;
       vms->num_allocated = vms->num_allocated + 1;
       continue;
