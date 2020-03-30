@@ -416,12 +416,20 @@ typedef struct{
   //Trie table
   void** trie_table;
   //Generational GC State
+  char* dirty;
+  char* first_object_offset;
   char* nursery;
   char* nursery_top;
   char* nursery_limit;
   int num_allocated;
   int num_copied;
+  //Stacks in Heap
+  int num_stacks;
+  int num_stack_capacity;
+  uint64_t* stacks;
 } VMState;
+
+#define NUM_CARD_BITS 8
 
 typedef struct{
   uint64_t returnpc;
@@ -1500,7 +1508,9 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       DECODE_E();
       int64_t* address = (int64_t*)(LOCAL(x) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
-      // printf("WRITE8 %p %llu\n", address, storeval);
+      uint32_t dirty_address = ((uint32_t)address) >> NUM_CARD_BITS;
+      printf("  SETTING DIRTY %06x %08x %08x %0llx\n", dirty_address, (uint32_t)address, (uint32_t)storeval, storeval);
+      vms->dirty[dirty_address] = 1;
       *address = storeval;     
       continue;
     }
@@ -1522,7 +1532,9 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       DECODE_E();
       int64_t* address = (int64_t*)(LOCAL(x) + LOCAL(y) + value);
       int64_t storeval = (int64_t)(LOCAL(z));
-      // printf("WRITE8 %p %llu\n", address, storeval);
+      uint32_t dirty_address = ((uint32_t)address) >> NUM_CARD_BITS;
+      printf("  SETTING DIRTY %06x %08x %08x %0llx\n", dirty_address, (uint32_t)address, (uint32_t)storeval, storeval);
+      vms->dirty[dirty_address] = 1;
       *address = storeval;     
       continue;
     }

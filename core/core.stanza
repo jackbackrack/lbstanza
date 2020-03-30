@@ -9,6 +9,7 @@
 defpackage clib
 
 protected extern memcpy: (ptr<?>, ptr<?>, long) -> int
+protected extern memset: (ptr<?>, byte, long) -> int
 protected extern remove: (ptr<byte>) -> int
 protected extern rename: (ptr<byte>, ptr<byte>) -> int
 protected extern ftell: (ptr<?>) -> long
