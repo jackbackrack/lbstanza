@@ -368,8 +368,8 @@ lostanza val maximum-heap-address-bits:long = 32L
 lostanza val maximum-heap-size:long = (1L << maximum-heap-address-bits)
 lostanza val maximum-heap-address-mask:long = maximum-heap-size - 1L
 ;lostanza val nursery-size:long = 1L << 24L
-lostanza val nursery-size:long = 1L << 10L
-lostanza val initial-heap-size:long = 1L << 16L
+lostanza val nursery-size:long = 1L << 12L
+lostanza val initial-heap-size:long = 1L << 16L + nursery-size
 ;Card constants
 lostanza val num-card-size-bits:long = 8L
 ;Within card 
@@ -443,11 +443,11 @@ public lostanza defn VirtualMachine (backend:ref<Backend>) -> ref<VirtualMachine
   update-vmstate(vm)
   return vm
 
-lostanza defn alloc-heap (vm:ptr<VMState>, tag:long, size:long) -> ptr<?> :
-  ;Make space on heap
-  val obj = vm.heap-top + 8
-  [vm.heap-top] = tag
-  vm.heap-top = vm.heap-top + 8 + size
+lostanza defn alloc-nursery (vm:ptr<VMState>, tag:long, size:long) -> ptr<?> :
+  ;Make space on nursery
+  val obj = vm.nursery-top + 8
+  [vm.nursery-top] = tag
+  vm.nursery-top = vm.nursery-top + 8 + size
   return obj
 
 lostanza defn add-stack (vm:ptr<VMState>, stack:long) -> int :
@@ -458,8 +458,7 @@ lostanza defn add-stack (vm:ptr<VMState>, stack:long) -> int :
 
 lostanza defn alloc-stack (vm:ptr<VMState>) -> long :
   ;Allocate stack
-  val sptr:ptr<Stack> = alloc-heap(vm, STACK-TYPE.value, sizeof(Stack))
-  add-stack(vm, (sptr - 8) as long)
+  val sptr:ptr<Stack> = alloc-nursery(vm, STACK-TYPE.value, sizeof(Stack))
 
   ;Allocate stack frames
   val stack-size = 4 * 1024
@@ -618,6 +617,7 @@ defn print-stack-buffer (buffer:Vector<FileInfo>) :
 ;============================================================
 
 lostanza defn extend-heap (vm:ref<VirtualMachine>, size:long) -> long :
+  call-c clib/printf("=== EXTEND-HEAP %d\n", size)
   ;Check whether we're still out of space.
   val vms = vm.vmstate
 
@@ -667,10 +667,11 @@ lostanza defn extend-heap (vm:ref<VirtualMachine>, size:long) -> long :
     ;We have enough space to satisfy the request
     return 1
 
-lostanza defn ensure-heap-space (vm:ref<VirtualMachine>, size:long, num-objs:long) -> int :
+lostanza defn ensure-nursery-space (vm:ref<VirtualMachine>, size:long, num-objs:long) -> int :
   val total-size = size + num-objs * 8
   val vms = vm.vmstate
-  if (vms.heap-top + total-size + nursery-size) > vms.heap-limit :
+  call-c clib/printf("=== ENSURE-NURSERY %d %d %d\n", size, num-objs, total-size)
+  if (vms.nursery-top + total-size) > vms.nursery-limit :
     val success = extend-heap(vm, total-size)
     if success == 0 : fatal("VM Out of Memory")
   return 0
@@ -768,6 +769,7 @@ lostanza defn collect-nursery-garbage (vm:ref<VirtualMachine>) -> long :
   return 0
 
 lostanza defn collect-garbage (vm:ref<VirtualMachine>) -> long :
+  call-c clib/printf("=== COLLECT-GARBAGE\n")
   collect-nursery-garbage(vm)
   collect-heap-garbage(vm)
   return 0
@@ -1451,8 +1453,8 @@ lostanza defn launch-init (vm:ref<VirtualMachine>, fid:ref<Int>, trace?:ref<True
   val vms = vm.vmstate
   ;Create the closure representing the initialization function
   val closure-size = 8 + 8
-  ensure-heap-space(vm, closure-size, 1)
-  val closure:ptr<Function> = alloc-heap(vms, FN-TYPE.value, closure-size)
+  ensure-nursery-space(vm, closure-size, 1)
+  val closure:ptr<Function> = alloc-nursery(vms, FN-TYPE.value, closure-size)
   closure.num-slots = 0L
   closure.code = fid.value
   ;Call closure using the launcher function

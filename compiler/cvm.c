@@ -1580,6 +1580,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       size = (size + 7) & -8;
       int num_locals = y;
       int offset = x * 4;
+      printf("RESERVE LOCAL %d FITS? %d\n", size, nursery_top + size <= nursery_limit);
       if(nursery_top + size <= nursery_limit){
         pc = pc0 + offset;
         continue;
@@ -1598,6 +1599,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       uint64_t size = value;
       int num_locals = y;
       int offset = x * 4;
+      printf("RESERVE CONST %d FITS? %d\n", size, nursery_top + size <= nursery_limit);
       if(nursery_top + size <= nursery_limit){
         pc = pc0 + offset;
         continue;
