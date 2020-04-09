@@ -345,15 +345,15 @@
 
 #define SAVE_STATE() \
   vms->heap_top = heap_top; \
-  vms->nursery_top = nursery_top; \
+  vms->eden_top = eden_top; \
   vms->current_stack = current_stack; \
   stk->stack_pointer = stack_pointer; 
 
 #define RESTORE_STATE() \
   heap_top = vms->heap_top; \
   heap_limit = vms->heap_limit; \
-  nursery_top = vms->nursery_top; \
-  nursery_limit = vms->nursery_limit; \
+  eden_top = vms->eden_top; \
+  eden_limit = vms->eden_limit; \
   current_stack = vms->current_stack; \
   stk = untag_stack(current_stack); \
   stack_pointer = stk->stack_pointer; \
@@ -419,11 +419,21 @@ typedef struct{
   char* dirty;
   char* first_object_offset;
   char* nursery;
-  char* nursery_top;
   char* nursery_limit;
+  char* eden;
+  char* eden_top;
+  char* eden_limit;
+  char* past_space;
+  char* past_space_top;
+  char* past_space_limit;
+  char* future_space;
+  char* future_space_top;
+  char* future_space_limit;
+  long is_evacuate_future_space;
+  long is_evacuate_past_space;
   int num_allocated;
   int num_copied;
-  //Stacks in Heap
+  // Stacks in Heap
   int num_stacks;
   int num_stack_capacity;
   uint64_t* stacks;
@@ -509,8 +519,8 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
   uint32_t* code_offsets = vms->code_offsets;
   //Variable State
   //Changes in_between each boundary change
-  char* nursery_top = vms->nursery_top;
-  char* nursery_limit = vms->nursery_limit;
+  char* eden_top = vms->eden_top;
+  char* eden_limit = vms->eden_limit;
   char* heap_top = vms->heap_top;
   char* heap_limit = vms->heap_limit;
   uint64_t current_stack = vms->current_stack;
@@ -1580,7 +1590,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       size = (size + 7) & -8;
       int num_locals = y;
       int offset = x * 4;
-      if(nursery_top + size <= nursery_limit){
+      if(eden_top + size <= eden_limit){
         pc = pc0 + offset;
         continue;
       }else{
@@ -1598,7 +1608,7 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       uint64_t size = value;
       int num_locals = y;
       int offset = x * 4;
-      if(nursery_top + size <= nursery_limit){
+      if(eden_top + size <= eden_limit){
         pc = pc0 + offset;
         continue;
       }else{
@@ -1615,11 +1625,11 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       DECODE_C();
       int num_bytes = 8 + y;
       int type = value;
-      *(uint64_t*)nursery_top = type;
-      uint64_t obj = ptr_to_ref(nursery_top);
+      *(uint64_t*)eden_top = type;
+      uint64_t obj = ptr_to_ref(eden_top);
       SET_LOCAL(x, obj);
-      printf("ALLOC %d %04d TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)nursery_top, retrieve_class_name(vms, type));
-      nursery_top = nursery_top + num_bytes;
+      printf("ALLOC %d %04d TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)eden_top, retrieve_class_name(vms, type));
+      eden_top = eden_top + num_bytes;
       vms->num_allocated = vms->num_allocated + 1;
       continue;
     }
@@ -1628,11 +1638,11 @@ void vmloop (VMState* vms, uint64_t stanza_crsp){
       uint64_t num_bytes = 8 + LOCAL(y);
       num_bytes = (num_bytes + 7) & -8;
       int type = value;
-      *(uint64_t*)nursery_top = type;
-      uint64_t obj = ptr_to_ref(nursery_top);
+      *(uint64_t*)eden_top = type;
+      uint64_t obj = ptr_to_ref(eden_top);
       SET_LOCAL(x, obj);
-      printf("ALLOC %d %04llu TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)nursery_top, retrieve_class_name(vms, type));
-      nursery_top = nursery_top + num_bytes;
+      printf("ALLOC %d %04llu TYPE %04x AT %08llx TYPE %s\n", alloc_id++, num_bytes, type, (uint64_t)eden_top, retrieve_class_name(vms, type));
+      eden_top = eden_top + num_bytes;
       vms->num_allocated = vms->num_allocated + 1;
       continue;
     }
